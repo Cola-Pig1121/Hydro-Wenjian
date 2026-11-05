@@ -131,16 +131,39 @@ export async function buildUI() {
     const str = `window.LOCALES=${JSON.stringify(global.Hydro.locales[lang][Symbol.for('iterate')])};`;
     addFile(`lang-${lang}.js`, str);
   }
-  const entry = await build([
-    `window.lazyloadMetadata = ${JSON.stringify(hashes)};`,
-    `window.LANGS=${JSON.stringify(SettingModel.langs)};`,
-    ...entryPoints.map((i) => `import '${relative(tmp, i).replace(/\\/g, '\\\\')}';`),
-  ].join('\n'));
-  const pages = entry.outputFiles.filter((i) => i.path.endsWith('.js')).map((i) => i.text);
-  const css = entry.outputFiles.filter((i) => i.path.endsWith('.css')).map((i) => i.text);
+  // Disk cache for the page bundle: on low-resource deployments the esbuild pass
+  // (especially re-minifying addon pages) can stall app/started for many minutes.
+  // ~/.hydro/uibuild.json stores { pages, css }; delete it (or set UIBUILD_REBUILD=1)
+  // to force a rebuild after changing any addon frontend.
+  const cacheFile = resolve(process.env.HOME || process.env.USERPROFILE || tmp, '.hydro', 'uibuild.json');
+  let pagesText = '';
+  let cssText = '';
+  if (!process.env.UIBUILD_REBUILD && fs.existsSync(cacheFile)) {
+    try {
+      const cached = JSON.parse(fs.readFileSync(cacheFile, 'utf-8')) as { pages: string, css: string };
+      pagesText = cached.pages;
+      cssText = cached.css;
+      logger.info('UI build cache hit: %s', cacheFile);
+    } catch {
+      pagesText = '';
+    }
+  }
+  if (!pagesText) {
+    const entry = await build([
+      ...entryPoints.map((i) => `import '${relative(tmp, i).replace(/\\/g, '\\\\')}';`),
+    ].join('\n'));
+    pagesText = entry.outputFiles.filter((i) => i.path.endsWith('.js')).map((i) => i.text).join('\n');
+    cssText = entry.outputFiles.filter((i) => i.path.endsWith('.css')).map((i) => i.text).join('\n');
+    try {
+      fs.writeFileSync(cacheFile, JSON.stringify({ pages: pagesText, css: cssText }));
+      logger.info('UI build cached to %s', cacheFile);
+    } catch { /* cache is best-effort */ }
+  }
   addFile('entry.js', `window._hydroLoad=()=>{
-    ${css.length ? applyCss(css.join('\n')) : ''}
-    ${pages.join('\n')}
+    window.lazyloadMetadata = ${JSON.stringify(hashes)};
+    window.LANGS=${JSON.stringify(SettingModel.langs)};
+    ${cssText ? applyCss(cssText) : ''}
+    ${pagesText}
   };`);
   UiContextBase.constantVersion = hashes['entry.js'];
   for (const key in vfs) {
