@@ -1,0 +1,28 @@
+/** @type {import('jest').Config} */
+module.exports = {
+  preset: 'ts-jest',
+  transform: {
+    '^.+\\.tsx?$': ['ts-jest', { tsconfig: { jsx: 'react', lib: ['ES2020', 'DOM'] } }],
+  },
+  testEnvironment: 'node',
+  roots: ['<rootDir>/src'],
+  testMatch: ['**/__tests__/**/*.test.ts'],
+  moduleFileExtensions: ['ts', 'tsx', 'js', 'jsx', 'json', 'node'],
+  collectCoverageFrom: [
+    'src/**/*.ts',
+    '!src/**/*.d.ts',
+    '!src/index.ts'
+  ],
+  coverageDirectory: 'coverage',
+  coverageThreshold: {
+    global: {
+      statements: 42,
+      branches: 37,
+      functions: 42,
+      lines: 42,
+    },
+  },
+  moduleNameMapper: {
+    '^hydrooj$': '<rootDir>/src/__tests__/__mocks__/hydrooj.ts'
+  }
+};

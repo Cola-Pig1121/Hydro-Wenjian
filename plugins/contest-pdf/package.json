@@ -1,0 +1,10 @@
+{
+    "name": "@hydrooj/contest-pdf",
+    "version": "0.1.0",
+    "description": "快速导出一场比赛的所有题面为单个 PDF 文件",
+    "license": "AGPL-3.0-or-later",
+    "repository": {
+        "type": "git",
+        "url": "https://github.com/hydro-dev/Hydro"
+    }
+}

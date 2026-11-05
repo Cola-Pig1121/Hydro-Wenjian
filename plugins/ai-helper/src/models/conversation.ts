@@ -1,0 +1,415 @@
+/**
+ * Conversation Model - 对话会话数据模型
+ *
+ * 管理学生与 AI 的对话会话,记录会话元数据
+ */
+
+import type { Db, Collection, Filter, UpdateFilter } from 'mongodb';
+import { type ObjectIdType } from '../utils/mongo';
+import { ensureObjectId } from '../utils/ensureObjectId';
+
+/**
+ * 对话有效性多维信号
+ * 设计原则：存客观原子信号，不存解读标签
+ */
+export interface ConversationMetrics {
+  v: 1;
+
+  // Group 1: 对话信号（即时计算）
+  studentMessageCount: number;
+  studentTotalLength: number;
+
+  // Group 2: 行为信号（延迟回填，需关联 HydroOJ record 集合）
+  submissionsAfter: number | null;
+  firstAcceptedIndex: number | null;
+
+  // Group 3: 上下文快照
+  problemDifficulty: number | null;
+
+  // 回填状态
+  backfilledAt: Date | null;
+}
+
+/**
+ * 对话会话接口
+ */
+export interface Conversation {
+  _id: ObjectIdType;       // 会话唯一标识
+  domainId: string;        // 域 ID (用于多租户隔离)
+  userId: number;          // 学生用户 ID
+  problemId: string;       // 题目 ID
+  classId?: string;        // 班级 ID (可选)
+  startTime: Date;         // 会话开始时间
+  endTime: Date;           // 会话最后更新时间
+  messageCount: number;    // 消息总数
+  isEffective: boolean;    // 是否为有效对话 (向后兼容，由 metrics 派生)
+  metrics?: ConversationMetrics;
+  teacherNote?: string;    // 教师备注 (可选,预留给后续 Phase)
+  tags: string[];          // 标签列表 (预留给后续 Phase)
+  // 可选 metadata 字段 (预留扩展)
+  metadata?: {
+    problemTitle?: string;    // 题目标题
+    problemContent?: string;  // 题目描述摘要
+    offTopicStrike?: number;  // 连续偏题计数
+    totalTokens?: number;     // 会话累计 token 用量
+  };
+}
+
+/**
+ * Conversation Model 操作类
+ * 封装对话会话的 CRUD 操作
+ */
+export class ConversationModel {
+  private collection: Collection<Conversation>;
+
+  constructor(db: Db) {
+    this.collection = db.collection<Conversation>('ai_conversations');
+  }
+
+  /**
+   * 确保索引已创建
+   * 优化常用查询性能: 按用户、题目、时间筛选
+   */
+  async ensureIndexes(): Promise<void> {
+    // 创建索引: 域 ID (用于域隔离查询)
+    await this.collection.createIndex(
+      { domainId: 1 },
+      { name: 'idx_domainId' }
+    );
+
+    // 创建复合索引: 域 ID + 开始时间 (域内按时间排序)
+    await this.collection.createIndex(
+      { domainId: 1, startTime: -1 },
+      { name: 'idx_domainId_startTime' }
+    );
+
+    // 创建复合索引: 域 ID + 用户 ID + 开始时间
+    await this.collection.createIndex(
+      { domainId: 1, userId: 1, startTime: -1 },
+      { name: 'idx_domainId_userId_startTime' }
+    );
+
+    // 创建复合索引: 域 ID + 题目 ID + 开始时间
+    await this.collection.createIndex(
+      { domainId: 1, problemId: 1, startTime: -1 },
+      { name: 'idx_domainId_problemId_startTime' }
+    );
+
+    // 创建复合索引: 用户 + 开始时间 (降序)
+    await this.collection.createIndex(
+      { userId: 1, startTime: -1 },
+      { name: 'idx_userId_startTime' }
+    );
+
+    // 创建索引: 题目 ID
+    await this.collection.createIndex(
+      { problemId: 1 },
+      { name: 'idx_problemId' }
+    );
+
+    // 创建复合索引: 题目 ID + 开始时间
+    await this.collection.createIndex(
+      { problemId: 1, startTime: -1 },
+      { name: 'idx_problemId_startTime' }
+    );
+
+    // 创建索引: 班级 ID (稀疏索引,因为 classId 可选)
+    await this.collection.createIndex(
+      { classId: 1 },
+      { name: 'idx_classId', sparse: true }
+    );
+
+    // 创建复合索引: 班级 ID + 开始时间 (稀疏)
+    await this.collection.createIndex(
+      { classId: 1, startTime: -1 },
+      { name: 'idx_classId_startTime', sparse: true }
+    );
+
+    // 创建索引: 开始时间 (用于时间范围筛选)
+    await this.collection.createIndex(
+      { startTime: -1 },
+      { name: 'idx_startTime' }
+    );
+
+    // 创建索引: 结束时间 (用于查询最近对话时间)
+    await this.collection.createIndex(
+      { endTime: -1 },
+      { name: 'idx_endTime' }
+    );
+
+    // 创建复合索引: 用户 + 题目 + 开始时间 (用于行为信号归因查询)
+    await this.collection.createIndex(
+      { userId: 1, problemId: 1, startTime: -1 },
+      { name: 'idx_userId_problemId_startTime' }
+    );
+
+    // 创建稀疏索引: 待回填文档扫描 (启动补偿用)
+    await this.collection.createIndex(
+      { 'metrics.backfilledAt': 1, endTime: 1 },
+      { name: 'idx_metrics_backfill', sparse: true }
+    );
+
+    console.log('[ConversationModel] Indexes created successfully');
+  }
+
+  /**
+   * 创建新的对话会话
+   * @param data 会话数据
+   * @returns 插入的会话 ID
+   */
+  async create(data: Omit<Conversation, '_id'>): Promise<ObjectIdType> {
+    const result = await this.collection.insertOne(data as Conversation);
+    return result.insertedId;
+  }
+
+  /**
+   * 根据 ID 查找会话
+   * @param id 会话 ID (字符串或 ObjectId)
+   * @returns 会话对象或 null
+   */
+  async findById(id: string | ObjectIdType): Promise<Conversation | null> {
+    const _id = ensureObjectId(id);
+    return this.collection.findOne({ _id });
+  }
+
+  /**
+   * 更新会话的最后更新时间
+   * @param id 会话 ID
+   * @param endTime 最后更新时间
+   */
+  async updateEndTime(id: string | ObjectIdType, endTime: Date): Promise<void> {
+    const _id = ensureObjectId(id);
+    await this.collection.updateOne(
+      { _id },
+      { $set: { endTime } }
+    );
+  }
+
+  /**
+   * 增加会话的消息计数
+   * @param id 会话 ID
+   */
+  async incrementMessageCount(id: string | ObjectIdType): Promise<void> {
+    const _id = ensureObjectId(id);
+    await this.collection.updateOne(
+      { _id },
+      { $inc: { messageCount: 1 } }
+    );
+  }
+
+  /**
+   * 更新会话的有效性标记
+   * @param id 会话 ID
+   * @param isEffective 是否有效
+   */
+  async updateEffectiveness(id: string | ObjectIdType, isEffective: boolean): Promise<void> {
+    const _id = ensureObjectId(id);
+    await this.collection.updateOne(
+      { _id },
+      { $set: { isEffective } }
+    );
+  }
+
+  /**
+   * 幂等写入对话有效性信号（使用 $set，防止并发 fire-and-forget 累加出错）
+   */
+  async updateMetrics(
+    id: string | ObjectIdType,
+    metrics: ConversationMetrics,
+    isEffective: boolean,
+  ): Promise<void> {
+    const _id = ensureObjectId(id);
+    await this.collection.updateOne(
+      { _id },
+      { $set: { metrics, isEffective } }
+    );
+  }
+
+  /**
+   * 查找待回填的文档（metrics.backfilledAt=null 且 endTime 已超过指定时间）
+   * 利用 idx_metrics_backfill 稀疏索引
+   */
+  async findPendingBackfill(endTimeBefore: Date, limit: number = 100): Promise<Conversation[]> {
+    return this.collection.find({
+      'metrics.v': 1,
+      'metrics.backfilledAt': null,
+      endTime: { $lte: endTimeBefore },
+    }).limit(limit).toArray();
+  }
+
+  /**
+   * 根据筛选条件查找会话列表 (分页)
+   * @param filters 筛选条件
+   * @param page 页码 (从 1 开始)
+   * @param limit 每页条数 (默认 50)
+   * @returns 会话列表和总数
+   */
+  async findByFilters(
+    filters: {
+      domainId?: string;    // 域 ID (用于域隔离)
+      startDate?: string;   // 开始日期 (ISO 8601)
+      endDate?: string;     // 结束日期
+      problemId?: string;   // 题目 ID
+      classId?: string;     // 班级 ID
+      userId?: number;      // 学生 ID
+    },
+    page: number = 1,
+    limit: number = 50
+  ): Promise<{ conversations: Conversation[]; total: number }> {
+    // 构造查询条件
+    const query: Filter<Conversation> = {};
+
+    if (filters.domainId) {
+      query.domainId = filters.domainId;
+    }
+
+    if (filters.userId !== undefined) {
+      query.userId = filters.userId;
+    }
+
+    if (filters.problemId) {
+      query.problemId = filters.problemId;
+    }
+
+    if (filters.classId) {
+      query.classId = filters.classId;
+    }
+
+    // 时间范围筛选
+    if (filters.startDate || filters.endDate) {
+      query.startTime = {};
+      if (filters.startDate) {
+        query.startTime.$gte = new Date(filters.startDate);
+      }
+      if (filters.endDate) {
+        query.startTime.$lte = new Date(filters.endDate);
+      }
+    }
+
+    // 查询总数
+    const total = await this.collection.countDocuments(query);
+
+    // 查询分页数据 (按开始时间降序排序)
+    const skip = (page - 1) * limit;
+    const projection: Partial<Record<keyof Conversation, 1 | 0>> = {
+      _id: 1,
+      domainId: 1,
+      userId: 1,
+      classId: 1,
+      problemId: 1,
+      startTime: 1,
+      endTime: 1,
+      messageCount: 1,
+      isEffective: 1,
+      metrics: 1,
+      tags: 1,
+      teacherNote: 1,
+      metadata: 1
+    };
+
+    const conversations = await this.collection
+      .find(query, { projection })
+      .sort({ startTime: -1 })
+      .skip(skip)
+      .limit(limit)
+      .toArray();
+
+    return { conversations, total };
+  }
+
+  /**
+   * 更新会话的教师备注和标签 (预留给后续 Phase)
+   * @param id 会话 ID
+   * @param teacherNote 教师备注
+   * @param tags 标签列表
+   */
+  async updateTeacherAnnotations(
+    id: string | ObjectIdType,
+    teacherNote?: string,
+    tags?: string[]
+  ): Promise<void> {
+    const _id = ensureObjectId(id);
+    const update: Partial<Pick<Conversation, 'teacherNote' | 'tags'>> = {};
+
+    if (teacherNote !== undefined) {
+      update.teacherNote = teacherNote;
+    }
+
+    if (tags !== undefined) {
+      update.tags = tags;
+    }
+
+    if (Object.keys(update).length > 0) {
+      await this.collection.updateOne(
+        { _id },
+        { $set: update }
+      );
+    }
+  }
+
+  async incrementOffTopicStrike(id: string | ObjectIdType): Promise<number> {
+    const _id = ensureObjectId(id);
+    const result = await this.collection.findOneAndUpdate(
+      { _id },
+      { $inc: { 'metadata.offTopicStrike': 1 } } as unknown as UpdateFilter<Conversation>,
+      { returnDocument: 'after' }
+    );
+    return result?.metadata?.offTopicStrike
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      ?? (result as any)?.value?.metadata?.offTopicStrike
+      ?? 1;
+  }
+
+  async resetOffTopicStrike(id: string | ObjectIdType): Promise<void> {
+    const _id = ensureObjectId(id);
+    await this.collection.updateOne(
+      { _id },
+      { $set: { 'metadata.offTopicStrike': 0 } }
+    );
+  }
+
+  /**
+   * 统计活跃用户数（最近 N 天内有对话的用户）
+   * @param days 天数
+   * @param domainId 可选的域 ID 筛选
+   * @returns 活跃用户数
+   */
+  async countActiveUsers(days: number, domainId?: string): Promise<number> {
+    const date = new Date();
+    date.setDate(date.getDate() - days);
+
+    const filter: Filter<Conversation> = { startTime: { $gte: date } };
+    if (domainId) {
+      filter.domainId = domainId;
+    }
+
+    const users = await this.collection.distinct('userId', filter);
+    return users.length;
+  }
+
+  /**
+   * 统计总对话数
+   * @param domainId 可选的域 ID 筛选
+   * @returns 总对话数
+   */
+  async getTotalConversations(domainId?: string): Promise<number> {
+    const filter = domainId ? { domainId } : {};
+    return this.collection.countDocuments(filter);
+  }
+
+  /**
+   * 获取最近一次对话的结束时间
+   * @param domainId 可选的域 ID 筛选
+   * @returns 最近对话时间或 null
+   */
+  async getLastConversationTime(domainId?: string): Promise<Date | null> {
+    const filter = domainId ? { domainId } : {};
+    const result = await this.collection
+      .find(filter)
+      .sort({ endTime: -1 })
+      .limit(1)
+      .toArray();
+
+    return result[0]?.endTime || null;
+  }
+}

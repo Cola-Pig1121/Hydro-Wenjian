@@ -1,0 +1,1352 @@
+import { Icon } from '../components/Icon';
+/**
+ * TestdataGenPanel - AI 生成测试数据面板
+ *
+ * 嵌入题目文件页（/p/:pid/files），面向教师/出题人：
+ * 填写生成选项 → AI 根据题面生成文件计划 → 预览/编辑 → 确认写入题目测试数据。
+ * 后端在写入 config.yaml 后由 HydroOJ 自动同步评测设置。
+ */
+
+import React, { useState, useEffect, useCallback, useRef } from 'react';
+import { i18n } from '../utils/i18n';
+import { buildApiUrl } from '../utils/domainUtils';
+import { buildTestdataApplyFiles, buildTestdataApplyRequest } from './applyFiles';
+import {
+  COLORS, SPACING, RADIUS, TYPOGRAPHY,
+  getButtonStyle, getInputStyle, getAlertStyle,
+} from '../utils/styles';
+import {
+  adaptBackgroundTestdataGenerationFailure,
+  adaptSynchronousTestdataGenerationFailure,
+  DirectFallbackConfirmationView,
+  resolveTestdataRetryGuidance,
+  type TestdataRetryGuidance,
+} from './retryPolicyHints';
+import {
+  type VerificationSummaryData,
+} from './VerificationSummaryView';
+import {
+  type ProblemSpecSummaryData,
+} from './ProblemSpecSummaryView';
+import {
+  type CoverageSummaryData,
+} from './CoverageSummaryView';
+import {
+  type TestdataRiskAssessment,
+} from './TestdataRiskSummaryView';
+import {
+  getTestdataApplyPresentation,
+  parseTestdataApplyResult,
+  type TestdataApplyPresentation,
+  type TestdataApplyResult,
+} from './applyResult';
+
+import { TestdataPreviewSummary } from './TestdataPreviewSummary';
+import { TestdataFilePreview } from './TestdataFilePreview';
+
+// ─── 类型 ─────────────────────────────────────────────────────────────────────
+
+interface ProblemContext {
+  problem: {
+    docId: number;
+    pid: string;
+    title: string;
+    statementPreview: string;
+    hasStatement: boolean;
+    fillInDetected?: boolean;
+  };
+  existingFiles: string[];
+  acceptedSolutions?: Array<{
+    recordId: string;
+    lang: string;
+    submittedAt: string;
+    isOwn: boolean;
+  }>;
+  limits: { minCases: number; maxCases: number; maxExtraRequirements: number; maxProvidedStd?: number };
+  restorableJob?: BackgroundGenerationJob;
+}
+
+interface PlannedFile {
+  name: string;
+  content: string;
+  kind: 'case-in' | 'case-out' | 'template' | 'compile' | 'config' | 'std' | 'generator' | 'brute' | 'validator';
+  origin?: 'executed' | 'deterministic' | 'ai-only';
+}
+
+interface PlanVerification extends VerificationSummaryData {
+  mode: 'sandbox' | 'direct';
+  oracleKind: 'provided-std' | 'accepted-record' | 'ai-solution';
+  modelEscalation?: { fromModel: string; toModel: string };
+  sampleCheck?: { total: number; passed: number };
+  bruteCheck?: { compared: number; agreed: number; skippedTimeout: number[]; disagreed: number[] };
+  stressCheck?: {
+    generated: number;
+    uniqueInputs?: number;
+    duplicateInputs?: number;
+    compared: number;
+    agreed: number;
+    droppedInvalid?: number;
+    skippedReason?: 'custom-checker';
+  };
+  discrimination?: {
+    targets: Array<{
+      kind: 'boundary' | 'wrong-algorithm' | 'overflow-sim' | 'brute-complexity';
+      description: string;
+      killed: boolean;
+      killedBy?: 'wa' | 'tle';
+      killedByCase?: number;
+      skippedReason?: 'custom-checker' | 'checker-infra-error' | 'budget-exhausted' | 'no-targets' | 'no-complexity-gap';
+    }>;
+    allKilled: boolean;
+  };
+  coverage?: CoverageSummaryData;
+}
+
+interface GenerationPlan {
+  runId: string;
+  promptVersion: string;
+  specSchemaVersion?: number;
+  problemSpecSummary?: ProblemSpecSummaryData;
+  specConsensusStatus?: 'consensus' | 'adjudicated' | 'unresolved';
+  specConflictCount?: number;
+  unresolvedConflictCount?: number;
+  modelRolesUsed?: string[];
+  problemType: 'function' | 'traditional';
+  isFillIn?: boolean;
+  isSkeleton?: boolean;
+  requiresConfigReview?: boolean;
+  analysis?: string;
+  notes?: string;
+  notesStructured?: {
+    warnings: string[];
+    system: string[];
+    ai?: string;
+  };
+  files: PlannedFile[];
+  caseCount: number;
+  totalCaseCount?: number;
+  caseCoverage?: Array<{
+    caseNumber: number;
+    fileNumber: number;
+    dataScale: 'small' | 'medium' | 'large';
+    subtaskId?: number;
+    target: string;
+  }>;
+  coverageMode?: 'trusted-dsl' | 'ai-generator-unverified';
+  usedModel?: string;
+  verification?: PlanVerification;
+  risk?: TestdataRiskAssessment;
+  reliabilityMode?: 'legacy' | 'observe' | 'enforce';
+}
+
+type BackgroundGenerationJobStatus =
+  | 'pending'
+  | 'running'
+  | 'completed'
+  | 'failed'
+  | 'canceled'
+  | 'interrupted';
+
+interface BackgroundGenerationJob {
+  id: string;
+  problemId: string;
+  problemTitle: string;
+  status: BackgroundGenerationJobStatus;
+  progress: GenerationProgressEvent;
+  error?: {
+    message: string;
+    code: string;
+    category?: string;
+    failureCode?: string;
+    stage?: string;
+    artifact?: string;
+    retryPolicy?: string;
+    retryable: boolean;
+    recommendDeeperReasoning?: boolean;
+  };
+  plan?: GenerationPlan;
+  createdAt: string;
+  startedAt?: string | null;
+  updatedAt: string;
+  progressUpdatedAt: string;
+  completedAt?: string | null;
+}
+
+type GenerationProgressStage =
+  | 'preparing'
+  | 'sandbox_check'
+  | 'blueprint'
+  | 'blueprint_repair'
+  | 'solution_verification'
+  | 'artifacts'
+  | 'templates'
+  | 'independent_verifier'
+  | 'verifier_repair'
+  | 'generating_inputs'
+  | 'validating_inputs'
+  | 'running_oracle'
+  | 'checking_templates'
+  | 'stress_testing'
+  | 'discrimination_testing'
+  | 'mutation_testing'
+  | 'pipeline_repair'
+  | 'model_fallback'
+  | 'model_escalation'
+  | 'assembling'
+  | 'complete';
+
+interface GenerationProgressEvent {
+  stage: GenerationProgressStage;
+  percent: number;
+  attempt: number;
+}
+
+type PanelPhase = 'form' | 'generating' | 'preview' | 'applying' | 'applied';
+
+interface TestdataGenPanelProps {
+  problemId: string;
+}
+
+const TEMPLATE_LANG_OPTIONS: Array<{ value: string; label: string }> = [
+  { value: 'py', label: 'Python' },
+  { value: 'java', label: 'Java' },
+  { value: 'cc', label: 'C++' },
+];
+
+const GENERATION_STAGE_GROUPS: Array<{
+  key: string;
+  stages: GenerationProgressStage[];
+}> = [
+  {
+    key: 'understand',
+    stages: ['preparing', 'sandbox_check', 'blueprint', 'blueprint_repair', 'solution_verification', 'model_fallback'],
+  },
+  {
+    key: 'components',
+    stages: ['artifacts', 'templates', 'independent_verifier', 'verifier_repair'],
+  },
+  { key: 'inputs', stages: ['generating_inputs', 'validating_inputs'] },
+  {
+    key: 'verify',
+    stages: [
+      'running_oracle', 'checking_templates', 'stress_testing', 'discrimination_testing',
+      'mutation_testing', 'pipeline_repair', 'model_escalation',
+    ],
+  },
+  { key: 'finish', stages: ['assembling', 'complete'] },
+];
+
+function getGenerationStageGroupIndex(stage: GenerationProgressStage): number {
+  const index = GENERATION_STAGE_GROUPS.findIndex(group => group.stages.includes(stage));
+  return index >= 0 ? index : 0;
+}
+
+const JOB_POLL_INTERVAL_MS = 2_000;
+
+
+const MONO_FONT = "'SFMono-Regular', 'Menlo', 'Consolas', 'Liberation Mono', monospace";
+
+interface ApiErrorDetails {
+  message: string;
+  recommendDeeperReasoning: boolean;
+  failureCode?: string;
+  stage?: string;
+  artifact?: string;
+  retryPolicy?: string;
+}
+
+class TestdataRequestError extends Error {
+  constructor(
+    message: string,
+    readonly recommendDeeperReasoning = false,
+    readonly failureCode?: string,
+    readonly retryPolicy?: string,
+  ) {
+    super(message);
+    this.name = 'TestdataRequestError';
+  }
+}
+
+function localizedFailureMessage(failureCode: string | undefined, fallback: string): string {
+  if (!failureCode) return fallback;
+  return i18n(`ai_helper_testdata_failure_${failureCode.toLowerCase()}`);
+}
+
+async function parseErrorDetails(response: Response): Promise<ApiErrorDetails> {
+  try {
+    const data = await response.json();
+    if (data?.error) {
+      return {
+        message: localizedFailureMessage(data.failureCode, String(data.error)),
+        recommendDeeperReasoning: data.recommendDeeperReasoning === true,
+        failureCode: typeof data.failureCode === 'string' ? data.failureCode : undefined,
+        stage: typeof data.stage === 'string' ? data.stage : undefined,
+        artifact: typeof data.artifact === 'string' ? data.artifact : undefined,
+        retryPolicy: typeof data.retryPolicy === 'string' ? data.retryPolicy : undefined,
+      };
+    }
+  } catch { /* ignore */ }
+  return { message: `HTTP ${response.status}`, recommendDeeperReasoning: false };
+}
+
+// ─── 组件 ─────────────────────────────────────────────────────────────────────
+
+export const TestdataGenPanel: React.FC<TestdataGenPanelProps> = ({ problemId }) => {
+  const [context, setContext] = useState<ProblemContext | null>(null);
+  // 'denied' = 403 无权限（静默隐藏）；字符串 = 其他加载失败原因（显示错误卡，
+  // 避免插件未加载/后端异常时面板"静默消失"无从排查）
+  const [contextError, setContextError] = useState<'denied' | string | null>(null);
+  const [contextReloadKey, setContextReloadKey] = useState(0);
+  const [collapsed, setCollapsed] = useState(true);
+  const [phase, setPhase] = useState<PanelPhase>('form');
+  const [error, setError] = useState<string | null>(null);
+  const [retryGuidance, setRetryGuidance] = useState<TestdataRetryGuidance>('none');
+  const [generationProgress, setGenerationProgress] = useState<GenerationProgressEvent>({
+    stage: 'preparing', percent: 2, attempt: 1,
+  });
+  // 记录本轮尝试到达过的最远步骤：定向修复会真实回到较早步骤重做，
+  // 步骤条需要把"已到过、待重验"的步骤与从未到达的步骤区分开，避免看起来像进度倒退。
+  const [generationMaxGroup, setGenerationMaxGroup] = useState<{ attempt: number; index: number }>({
+    attempt: 1, index: 0,
+  });
+  useEffect(() => {
+    const index = getGenerationStageGroupIndex(generationProgress.stage);
+    setGenerationMaxGroup(prev => {
+      if (prev.attempt !== generationProgress.attempt) {
+        return { attempt: generationProgress.attempt, index };
+      }
+      return index > prev.index ? { attempt: prev.attempt, index } : prev;
+    });
+  }, [generationProgress]);
+  const [generationElapsedSeconds, setGenerationElapsedSeconds] = useState(0);
+  const [generationIdleSeconds, setGenerationIdleSeconds] = useState(0);
+  const [generationHeartbeatSeconds, setGenerationHeartbeatSeconds] = useState(0);
+  const [generationCanceling, setGenerationCanceling] = useState(false);
+  const generationStartedAtRef = useRef(0);
+  const generationLastEventAtRef = useRef(0);
+  const generationHeartbeatAtRef = useRef(0);
+  const [generationJobId, setGenerationJobId] = useState<string | null>(null);
+  const [resumeCheckpointJobId, setResumeCheckpointJobId] = useState<string | null>(null);
+  const restoreCheckedRef = useRef(false);
+  const jobStorageKey = `ai-helper:testdata-generation-job:${window.location.pathname}:${problemId}`;
+
+  // 表单状态
+  const [problemKind, setProblemKind] = useState<'auto' | 'traditional' | 'function'>('auto');
+  const [fillInMode, setFillInMode] = useState<'auto' | 'yes' | 'no'>('auto');
+  const [caseCount, setCaseCount] = useState(10);
+  const [dataScale, setDataScale] = useState<'auto' | 'small' | 'medium' | 'large'>('auto');
+  const [languages, setLanguages] = useState<string[]>(['py', 'java', 'cc']);
+  const [providedStd, setProvidedStd] = useState('');
+  const [acceptedStdRecordId, setAcceptedStdRecordId] = useState('');
+  const [extraRequirements, setExtraRequirements] = useState('');
+
+  // 生成结果状态
+  const [plan, setPlan] = useState<GenerationPlan | null>(null);
+  const [confirmDirectFallback, setConfirmDirectFallback] = useState(false);
+  const [directFallbackConfirmationRequired, setDirectFallbackConfirmationRequired] = useState(false);
+  const [fileContents, setFileContents] = useState<Record<string, string>>({});
+  const [selectedFiles, setSelectedFiles] = useState<Record<string, boolean>>({});
+  const [activeFile, setActiveFile] = useState<string | null>(null);
+  const [hasWrittenFiles, setHasWrittenFiles] = useState(false);
+  const [applyResult, setApplyResult] = useState<TestdataApplyResult | null>(null);
+  const [applyPresentation, setApplyPresentation] = useState<TestdataApplyPresentation | null>(null);
+  const [outcomeSubmitting, setOutcomeSubmitting] = useState(false);
+
+  const rememberJob = useCallback((jobId: string | null) => {
+    setGenerationJobId(jobId);
+    try {
+      if (jobId) window.localStorage.setItem(jobStorageKey, jobId);
+      else window.localStorage.removeItem(jobStorageKey);
+    } catch { /* localStorage may be unavailable in strict privacy mode */ }
+  }, [jobStorageKey]);
+
+  const loadPlanIntoPreview = useCallback((newPlan: GenerationPlan) => {
+    if (!newPlan || !Array.isArray(newPlan.files) || newPlan.files.length === 0) {
+      throw new Error(i18n('ai_helper_testdata_err_empty_plan'));
+    }
+    const contents: Record<string, string> = {};
+    const selected: Record<string, boolean> = {};
+    for (const f of newPlan.files) {
+      contents[f.name] = f.content;
+      selected[f.name] = true;
+    }
+    setPlan(newPlan);
+    setFileContents(contents);
+    setSelectedFiles(selected);
+    setActiveFile((newPlan.files.find(file => file.kind === 'case-in') || newPlan.files[0]).name);
+    setApplyResult(null);
+    setHasWrittenFiles(false);
+    setApplyPresentation(null);
+    setPhase('preview');
+  }, []);
+
+  // 只显示服务端真实阶段，不按等待时间伪造百分比或推测模型内部进度。
+  useEffect(() => {
+    if (phase !== 'generating') return undefined;
+    const startedAt = generationStartedAtRef.current || Date.now();
+    generationStartedAtRef.current = startedAt;
+    if (!generationLastEventAtRef.current) generationLastEventAtRef.current = startedAt;
+    if (!generationHeartbeatAtRef.current) generationHeartbeatAtRef.current = startedAt;
+    setGenerationElapsedSeconds(0);
+    setGenerationIdleSeconds(0);
+    setGenerationHeartbeatSeconds(0);
+    const timer = window.setInterval(() => {
+      const now = Date.now();
+      const elapsed = Math.max(0, Math.floor((now - startedAt) / 1000));
+      setGenerationElapsedSeconds(elapsed);
+      setGenerationIdleSeconds(Math.max(0, Math.floor((now - generationLastEventAtRef.current) / 1000)));
+      setGenerationHeartbeatSeconds(Math.max(
+        0,
+        Math.floor((now - generationHeartbeatAtRef.current) / 1000),
+      ));
+    }, 1000);
+    return () => window.clearInterval(timer);
+  }, [phase]);
+
+  // 加载题目上下文；403 → 无编辑权限静默隐藏，其他失败 → 显示错误卡
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      setContextError(null);
+      try {
+        const response = await fetch(
+          buildApiUrl(`/ai-helper/testdata-gen/context/${encodeURIComponent(problemId)}`),
+          { credentials: 'include' },
+        );
+        if (cancelled) return;
+        if (response.status === 403) {
+          setContextError('denied');
+          return;
+        }
+        if (!response.ok) {
+          console.warn(`[AI-Helper] testdata-gen context 加载失败: HTTP ${response.status}（插件后端未加载最新版本时通常为 404）`);
+          setContextError(`HTTP ${response.status}`);
+          return;
+        }
+        const data = await response.json() as ProblemContext;
+        setContext(data);
+      } catch (err) {
+        if (cancelled) return;
+        console.warn('[AI-Helper] testdata-gen context 加载失败:', err);
+        setContextError(err instanceof Error ? err.message : String(err));
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [problemId, contextReloadKey]);
+
+  // 服务端记录优先，localStorage 用于在结果刚完成但上下文尚未刷新时补充恢复。
+  useEffect(() => {
+    if (!context || restoreCheckedRef.current || phase !== 'form' || plan) return;
+    restoreCheckedRef.current = true;
+    let storedJobId = '';
+    try { storedJobId = window.localStorage.getItem(jobStorageKey) || ''; } catch { /* ignore */ }
+    const savedJob = context.restorableJob;
+    const jobId = savedJob?.id || storedJobId;
+    if (!jobId) return;
+
+    if (savedJob?.status === 'interrupted') {
+      rememberJob(null);
+      setResumeCheckpointJobId(savedJob.id);
+      setError(i18n('ai_helper_testdata_job_interrupted'));
+      setRetryGuidance('none');
+      setCollapsed(false);
+      return;
+    }
+
+    rememberJob(jobId);
+    const startedAt = Date.parse(savedJob?.startedAt || savedJob?.createdAt || '');
+    const progressAt = Date.parse(savedJob?.progressUpdatedAt || '');
+    const heartbeatAt = Date.parse(savedJob?.updatedAt || '');
+    generationStartedAtRef.current = Number.isFinite(startedAt) ? startedAt : Date.now();
+    generationLastEventAtRef.current = Number.isFinite(progressAt)
+      ? progressAt
+      : generationStartedAtRef.current;
+    generationHeartbeatAtRef.current = Number.isFinite(heartbeatAt)
+      ? heartbeatAt
+      : generationStartedAtRef.current;
+    if (savedJob?.progress) {
+      setGenerationProgress(savedJob.progress);
+    }
+    setCollapsed(false);
+    setPhase('generating');
+  }, [context, phase, plan, jobStorageKey, rememberJob]);
+
+  // 轮询持久任务。短暂网络故障只会让页面少一次更新，不会中断后台模型调用。
+  useEffect(() => {
+    if (!generationJobId || phase !== 'generating') return undefined;
+    let disposed = false;
+    let timer: number | undefined;
+
+    const poll = async () => {
+      let terminal = false;
+      try {
+        const response = await fetch(
+          buildApiUrl(`/ai-helper/testdata-gen/jobs/${encodeURIComponent(generationJobId)}`),
+          { credentials: 'include' },
+        );
+        if (!response.ok) {
+          const details = await parseErrorDetails(response);
+          if (response.status === 404 || response.status === 403) {
+            throw new TestdataRequestError(
+              details.message,
+              details.recommendDeeperReasoning,
+              details.failureCode,
+              details.retryPolicy,
+            );
+          }
+          throw new Error(details.message);
+        }
+        const data = await response.json() as { job: BackgroundGenerationJob };
+        if (disposed || !data.job) return;
+        const job = data.job;
+        const startedAt = Date.parse(job.startedAt || job.createdAt || '');
+        const progressAt = Date.parse(job.progressUpdatedAt || '');
+        const heartbeatAt = Date.parse(job.updatedAt || '');
+        if (Number.isFinite(startedAt)) generationStartedAtRef.current = startedAt;
+        if (Number.isFinite(progressAt)) generationLastEventAtRef.current = progressAt;
+        if (Number.isFinite(heartbeatAt)) generationHeartbeatAtRef.current = heartbeatAt;
+        if (job.progress) {
+          setGenerationProgress(job.progress);
+        }
+
+        if (job.status === 'completed') {
+          terminal = true;
+          if (!job.plan) throw new Error(i18n('ai_helper_testdata_err_empty_plan'));
+          loadPlanIntoPreview(job.plan);
+        } else if (job.status === 'failed' || job.status === 'interrupted') {
+          terminal = true;
+          rememberJob(null);
+          setResumeCheckpointJobId(job.status === 'interrupted' ? job.id : null);
+          setError(job.error?.code === 'WORKER_INTERRUPTED'
+            ? i18n('ai_helper_testdata_job_interrupted')
+            : localizedFailureMessage(
+              job.error?.failureCode,
+              job.error?.message || i18n('ai_helper_testdata_job_failed'),
+            ));
+          const failureUi = adaptBackgroundTestdataGenerationFailure(job.error || {});
+          setDirectFallbackConfirmationRequired(failureUi.showDirectFallbackConfirmation);
+          setRetryGuidance(failureUi.retryGuidance);
+          setPhase('form');
+        } else if (job.status === 'canceled') {
+          terminal = true;
+          rememberJob(null);
+          setError(i18n('ai_helper_testdata_err_canceled'));
+          setRetryGuidance('none');
+          setPhase('form');
+        }
+      } catch (err) {
+        if (disposed) return;
+        if (terminal || err instanceof TestdataRequestError) {
+          terminal = true;
+          rememberJob(null);
+          setError(err instanceof Error ? err.message : String(err));
+          setRetryGuidance(resolveTestdataRetryGuidance(
+            err instanceof TestdataRequestError ? err.retryPolicy : undefined,
+          ));
+          setPhase('form');
+        } else {
+          console.warn('[AI-Helper] testdata generation job poll failed:', err);
+        }
+      } finally {
+        if (!disposed && !terminal) {
+          timer = window.setTimeout(poll, JOB_POLL_INTERVAL_MS);
+        }
+      }
+    };
+
+    void poll();
+    return () => {
+      disposed = true;
+      if (timer !== undefined) window.clearTimeout(timer);
+    };
+  }, [generationJobId, phase, loadPlanIntoPreview, rememberJob]);
+
+  const existingFileSet = new Set(context?.existingFiles || []);
+
+  const toggleLanguage = (lang: string) => {
+    setLanguages(prev => (prev.includes(lang) ? prev.filter(l => l !== lang) : [...prev, lang]));
+  };
+
+  // ─── 生成 ───────────────────────────────────────────────────────────────────
+
+  const handleGenerate = useCallback(async (
+    resumeFromJobId?: string,
+    directFallbackConfirmed = confirmDirectFallback,
+    replacesJobId?: string,
+  ) => {
+    setError(null);
+    setRetryGuidance('none');
+    setDirectFallbackConfirmationRequired(false);
+    if (problemKind !== 'traditional' && languages.length === 0) {
+      setError(i18n('ai_helper_testdata_err_no_languages'));
+      return;
+    }
+    if (replacesJobId) rememberJob(null);
+    const startedAt = Date.now();
+    generationStartedAtRef.current = startedAt;
+    generationLastEventAtRef.current = startedAt;
+    generationHeartbeatAtRef.current = startedAt;
+    setGenerationIdleSeconds(0);
+    setGenerationHeartbeatSeconds(0);
+    setGenerationCanceling(false);
+    setGenerationProgress({ stage: 'preparing', percent: 2, attempt: 1 });
+    setGenerationMaxGroup({ attempt: 1, index: 0 });
+    setPhase('generating');
+    try {
+      const response = await fetch(buildApiUrl('/ai-helper/testdata-gen/jobs'), {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Requested-With': 'XMLHttpRequest',
+        },
+        credentials: 'include',
+        body: JSON.stringify({
+          problemId,
+          problemKind,
+          fillInMode,
+          caseCount,
+          dataScale,
+          languages,
+          providedStd: providedStd.trim() || undefined,
+          acceptedStdRecordId: acceptedStdRecordId || undefined,
+          extraRequirements: extraRequirements.trim() || undefined,
+          confirmDirectFallback: directFallbackConfirmed,
+          resumeFromJobId,
+          replacesJobId,
+        }),
+      });
+      if (!response.ok) {
+        const details = await parseErrorDetails(response);
+        throw new TestdataRequestError(
+          details.message,
+          details.recommendDeeperReasoning,
+          details.failureCode,
+          details.retryPolicy,
+        );
+      }
+      const data = await response.json() as { job: BackgroundGenerationJob };
+      if (!data.job?.id) throw new Error(i18n('ai_helper_testdata_job_start_failed'));
+      setResumeCheckpointJobId(null);
+      rememberJob(data.job.id);
+      const heartbeatAt = Date.parse(data.job.updatedAt || '');
+      if (Number.isFinite(heartbeatAt)) generationHeartbeatAtRef.current = heartbeatAt;
+      if (data.job.progress) {
+        setGenerationProgress(data.job.progress);
+      }
+    } catch (err) {
+      if (replacesJobId) rememberJob(replacesJobId);
+      setError(err instanceof Error ? err.message : String(err));
+      const failureUi = adaptSynchronousTestdataGenerationFailure({
+        failureCode: err instanceof TestdataRequestError ? err.failureCode : undefined,
+        retryPolicy: err instanceof TestdataRequestError ? err.retryPolicy : undefined,
+      });
+      setDirectFallbackConfirmationRequired(failureUi.showDirectFallbackConfirmation);
+      setRetryGuidance(failureUi.retryGuidance);
+      setPhase(replacesJobId ? 'preview' : 'form');
+    }
+  }, [
+    problemId, problemKind, fillInMode, caseCount,
+    dataScale, languages, providedStd, acceptedStdRecordId, extraRequirements, confirmDirectFallback,
+    rememberJob,
+  ]);
+
+  const handleCancelGeneration = useCallback(async () => {
+    if (!generationJobId || generationCanceling) return;
+    setGenerationCanceling(true);
+    try {
+      const response = await fetch(
+        buildApiUrl(`/ai-helper/testdata-gen/jobs/${encodeURIComponent(generationJobId)}/cancel`),
+        {
+          method: 'POST',
+          headers: { 'X-Requested-With': 'XMLHttpRequest' },
+          credentials: 'include',
+        },
+      );
+      if (!response.ok) throw new Error((await parseErrorDetails(response)).message);
+      rememberJob(null);
+      setError(i18n('ai_helper_testdata_err_canceled'));
+      setRetryGuidance('none');
+      setPhase('form');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setGenerationCanceling(false);
+    }
+  }, [generationJobId, generationCanceling, rememberJob]);
+
+  // ─── 骨架模式（AI 故障降级） ─────────────────────────────────────────────────
+
+  const handleSkeleton = useCallback(async () => {
+    setError(null);
+    setRetryGuidance('none');
+    if (problemKind !== 'traditional' && languages.length === 0) {
+      setError(i18n('ai_helper_testdata_err_no_languages'));
+      return;
+    }
+    setGenerationProgress({ stage: 'assembling', percent: 80, attempt: 1 });
+    setPhase('generating');
+    try {
+      const response = await fetch(buildApiUrl('/ai-helper/testdata-gen/skeleton'), {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Requested-With': 'XMLHttpRequest',
+        },
+        credentials: 'include',
+        body: JSON.stringify({
+          problemId,
+          problemKind,
+          caseCount,
+          dataScale,
+          languages,
+          providedStd: providedStd.trim() || undefined,
+          acceptedStdRecordId: acceptedStdRecordId || undefined,
+        }),
+      });
+      if (!response.ok) {
+        throw new Error((await parseErrorDetails(response)).message);
+      }
+      const data = await response.json() as { plan: GenerationPlan };
+      rememberJob(null);
+      loadPlanIntoPreview(data.plan);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+      setPhase('form');
+    }
+  }, [
+    problemId, problemKind, caseCount, dataScale, languages,
+    providedStd, acceptedStdRecordId, loadPlanIntoPreview, rememberJob,
+  ]);
+
+  // ─── 写入 ───────────────────────────────────────────────────────────────────
+
+  const handleApply = useCallback(async () => {
+    if (!plan) return;
+    setError(null);
+    const files = buildTestdataApplyFiles(plan.files, selectedFiles, fileContents, generationJobId);
+    if (files.length === 0) {
+      setError(i18n('ai_helper_testdata_err_none_selected'));
+      return;
+    }
+    const overwritten = files.filter(f => existingFileSet.has(f.name)).map(f => f.name);
+    const confirmText = overwritten.length > 0
+      ? i18n('ai_helper_testdata_confirm_overwrite', files.length, overwritten.join(', '))
+      : i18n('ai_helper_testdata_confirm_apply', files.length);
+    if (!window.confirm(confirmText)) return;
+
+    setPhase('applying');
+    try {
+      const request = buildTestdataApplyRequest({ problemId, jobId: generationJobId || undefined, files });
+      const response = await fetch(buildApiUrl('/ai-helper/testdata-gen/apply'), {
+        method: 'POST',
+        headers: {
+          ...request.headers,
+          'X-Requested-With': 'XMLHttpRequest',
+        },
+        credentials: 'include',
+        body: request.body,
+      });
+      const payload = await response.clone().json().catch(() => undefined);
+      if (!response.ok) {
+        const actualResult = parseTestdataApplyResult(payload);
+        if (actualResult) {
+          setApplyResult(actualResult);
+          if (actualResult.written.length > 0) setHasWrittenFiles(true);
+          setApplyPresentation(getTestdataApplyPresentation(false, actualResult));
+          setError((await parseErrorDetails(response)).message);
+          setPhase('applied');
+          return;
+        }
+        throw new Error((await parseErrorDetails(response)).message);
+      }
+      const data = parseTestdataApplyResult(payload);
+      if (!data) throw new Error(i18n('ai_helper_err_internal'));
+      setApplyResult(data);
+      if (data.written.length > 0) setHasWrittenFiles(true);
+      const presentation = getTestdataApplyPresentation(true, data);
+      setApplyPresentation(presentation);
+      if (presentation === 'success') rememberJob(null);
+      setPhase('applied');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+      setPhase('preview');
+    }
+  }, [
+    plan, selectedFiles, fileContents, problemId, existingFileSet,
+    generationJobId, rememberJob,
+  ]);
+
+  const handleDiscard = useCallback(async () => {
+    if (!window.confirm(i18n('ai_helper_testdata_discard_confirm'))) return;
+    const jobId = generationJobId;
+    setOutcomeSubmitting(true);
+    if (jobId) {
+      try {
+        const response = await fetch(
+          buildApiUrl(`/ai-helper/testdata-gen/jobs/${encodeURIComponent(jobId)}/dismiss`),
+          {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'X-Requested-With': 'XMLHttpRequest',
+            },
+            credentials: 'include',
+            body: JSON.stringify({}),
+          },
+        );
+        if (!response.ok) throw new Error((await parseErrorDetails(response)).message);
+      } catch (err) {
+        setError(err instanceof Error ? err.message : String(err));
+        setOutcomeSubmitting(false);
+        return;
+      }
+    }
+    rememberJob(null);
+    setPlan(null);
+    setFileContents({});
+    setSelectedFiles({});
+    setActiveFile(null);
+    setError(null);
+    setPhase('form');
+    setOutcomeSubmitting(false);
+  }, [generationJobId, rememberJob]);
+
+  const handleRegenerate = useCallback(() => {
+    void handleGenerate(undefined, confirmDirectFallback, generationJobId || undefined);
+  }, [confirmDirectFallback, generationJobId, handleGenerate]);
+
+  // ─── 渲染 ───────────────────────────────────────────────────────────────────
+
+  // 无编辑权限：静默隐藏
+  if (contextError === 'denied') return null;
+
+  // 加载失败（插件未加载/后端异常/网络问题）：显示错误卡便于排查
+  if (contextError) {
+    return (
+      <div style={{
+        background: COLORS.bgCard,
+        border: `1px solid ${COLORS.border}`,
+        borderRadius: RADIUS.md,
+        marginTop: SPACING.base,
+        padding: SPACING.base,
+      }}>
+        <div style={{ fontSize: '14px', fontWeight: 600, color: COLORS.textPrimary, marginBottom: SPACING.xs }}>
+          <Icon name="flask" size={18} /> {i18n('ai_helper_testdata_panel_title')}
+        </div>
+        <div style={{ ...getAlertStyle('warning'), marginBottom: SPACING.sm }}>
+          {i18n('ai_helper_testdata_context_error', contextError)}
+        </div>
+        <button style={getButtonStyle('secondary')} onClick={() => setContextReloadKey(k => k + 1)}>
+          {i18n('ai_helper_testdata_retry_btn')}
+        </button>
+      </div>
+    );
+  }
+
+  // 加载中
+  if (!context) return null;
+
+  const sectionStyle: React.CSSProperties = {
+    background: COLORS.bgCard,
+    border: `1px solid ${COLORS.border}`,
+    borderRadius: RADIUS.md,
+    marginTop: SPACING.base,
+    overflow: 'hidden',
+  };
+
+  const headerStyle: React.CSSProperties = {
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    padding: `${SPACING.md} ${SPACING.base}`,
+    cursor: 'pointer',
+    userSelect: 'none',
+  };
+
+  const labelStyle: React.CSSProperties = {
+    display: 'block',
+    fontSize: '13px',
+    fontWeight: 600,
+    color: COLORS.textSecondary,
+    marginBottom: SPACING.xs,
+  };
+
+  const fieldStyle: React.CSSProperties = { marginBottom: SPACING.base };
+
+  const renderForm = () => (
+    <div>
+      <div style={{ ...getAlertStyle('warning'), fontWeight: 600, marginBottom: SPACING.base }}>
+        <Icon name="info" /> {i18n('ai_helper_testdata_strong_model_notice')}
+      </div>
+      {!context.problem.hasStatement && (
+        <div style={{ ...getAlertStyle('warning'), marginBottom: SPACING.base }}>
+          {i18n('ai_helper_testdata_warn_no_statement')}
+        </div>
+      )}
+      <div style={fieldStyle}>
+        <label style={labelStyle}>{i18n('ai_helper_testdata_kind_label')}</label>
+        <select
+          value={problemKind}
+          onChange={e => {
+            const next = e.target.value as typeof problemKind;
+            setProblemKind(next);
+            if (next !== 'traditional') setAcceptedStdRecordId('');
+          }}
+          style={{ ...getInputStyle(), maxWidth: '320px' }}
+        >
+          <option value="auto">{i18n('ai_helper_testdata_kind_auto')}</option>
+          <option value="traditional">{i18n('ai_helper_testdata_kind_traditional')}</option>
+          <option value="function">{i18n('ai_helper_testdata_kind_function')}</option>
+        </select>
+        <div style={{ ...TYPOGRAPHY.xs, color: COLORS.textMuted, marginTop: SPACING.xs }}>
+          {i18n('ai_helper_testdata_kind_hint')}
+        </div>
+      </div>
+      <div style={fieldStyle}>
+        <label style={labelStyle}>{i18n('ai_helper_testdata_fill_in_label')}</label>
+        <select
+          value={fillInMode}
+          onChange={e => setFillInMode(e.target.value as typeof fillInMode)}
+          style={{ ...getInputStyle(), maxWidth: '320px' }}
+        >
+          <option value="auto">{i18n('ai_helper_testdata_fill_in_auto')}</option>
+          <option value="yes">{i18n('ai_helper_testdata_fill_in_yes')}</option>
+          <option value="no">{i18n('ai_helper_testdata_fill_in_no')}</option>
+        </select>
+        <div style={{ ...TYPOGRAPHY.xs, color: COLORS.textMuted, marginTop: SPACING.xs }}>
+          {context.problem.fillInDetected
+            ? i18n('ai_helper_testdata_fill_in_detected')
+            : i18n('ai_helper_testdata_fill_in_hint')}
+        </div>
+      </div>
+      <div style={{ display: 'flex', gap: SPACING.lg, flexWrap: 'wrap' }}>
+        <div style={fieldStyle}>
+          <label style={labelStyle}>{i18n('ai_helper_testdata_case_count_label')}</label>
+          <input
+            type="number"
+            min={context.limits.minCases}
+            max={context.limits.maxCases}
+            value={caseCount}
+            onChange={e => {
+              const v = parseInt(e.target.value, 10);
+              if (!Number.isNaN(v)) setCaseCount(v);
+            }}
+            style={{ ...getInputStyle(), maxWidth: '120px' }}
+          />
+        </div>
+        <div style={fieldStyle}>
+          <label style={labelStyle}>{i18n('ai_helper_testdata_scale_label')}</label>
+          <select
+            value={dataScale}
+            onChange={e => setDataScale(e.target.value as typeof dataScale)}
+            style={{ ...getInputStyle(), maxWidth: '260px' }}
+          >
+            <option value="auto">{i18n('ai_helper_testdata_scale_auto')}</option>
+            <option value="small">{i18n('ai_helper_testdata_scale_small')}</option>
+            <option value="medium">{i18n('ai_helper_testdata_scale_medium')}</option>
+            <option value="large">{i18n('ai_helper_testdata_scale_large')}</option>
+          </select>
+        </div>
+      </div>
+      {dataScale === 'large' && (
+        <div style={{ ...getAlertStyle('warning'), marginBottom: SPACING.base }}>
+          {i18n('ai_helper_testdata_scale_large_warning')}
+        </div>
+      )}
+      {problemKind !== 'traditional' && (
+        <div style={fieldStyle}>
+          <label style={labelStyle}>{i18n('ai_helper_testdata_languages_label')}</label>
+          <div style={{ display: 'flex', gap: SPACING.base }}>
+            {TEMPLATE_LANG_OPTIONS.map(opt => (
+              <label key={opt.value} style={{ display: 'inline-flex', alignItems: 'center', gap: SPACING.xs, fontSize: '14px', cursor: 'pointer' }}>
+                <input
+                  type="checkbox"
+                  checked={languages.includes(opt.value)}
+                  onChange={() => toggleLanguage(opt.value)}
+                />
+                {opt.label}
+              </label>
+            ))}
+          </div>
+          <div style={{ ...TYPOGRAPHY.xs, color: COLORS.textMuted, marginTop: SPACING.xs }}>
+            {i18n('ai_helper_testdata_languages_hint')}
+          </div>
+        </div>
+      )}
+      <div style={fieldStyle}>
+        <label style={labelStyle}>{i18n('ai_helper_testdata_std_label')}</label>
+        {(context.acceptedSolutions || []).length > 0 && (
+          <>
+            <select
+              value={acceptedStdRecordId}
+              disabled={problemKind !== 'traditional'}
+              onChange={e => {
+                setAcceptedStdRecordId(e.target.value);
+                if (e.target.value) setProvidedStd('');
+              }}
+              style={{ ...getInputStyle(), marginBottom: SPACING.xs }}
+            >
+              <option value="">{i18n('ai_helper_testdata_std_ac_none')}</option>
+              {(context.acceptedSolutions || []).map(candidate => (
+                <option key={candidate.recordId} value={candidate.recordId}>
+                  {candidate.lang} · {new Date(candidate.submittedAt).toLocaleString()}
+                  {candidate.isOwn ? ` · ${i18n('ai_helper_testdata_std_ac_own')}` : ''}
+                </option>
+              ))}
+            </select>
+            <div style={{ ...TYPOGRAPHY.xs, color: COLORS.textMuted, marginBottom: SPACING.xs }}>
+              {problemKind === 'traditional'
+                ? i18n('ai_helper_testdata_std_ac_hint')
+                : i18n('ai_helper_testdata_std_ac_traditional_hint')}
+            </div>
+          </>
+        )}
+        <textarea
+          value={providedStd}
+          disabled={!!acceptedStdRecordId}
+          onChange={e => {
+            setProvidedStd(e.target.value.slice(0, context.limits.maxProvidedStd ?? 10000));
+            if (e.target.value) setAcceptedStdRecordId('');
+          }}
+          placeholder={i18n(acceptedStdRecordId
+            ? 'ai_helper_testdata_std_ac_selected_placeholder'
+            : 'ai_helper_testdata_std_placeholder')}
+          rows={providedStd ? 8 : 3}
+          spellCheck={false}
+          style={{ ...getInputStyle(), resize: 'vertical', fontFamily: MONO_FONT, fontSize: '13px' }}
+        />
+        <div style={{ ...TYPOGRAPHY.xs, color: COLORS.textMuted, marginTop: SPACING.xs }}>
+          {i18n('ai_helper_testdata_std_hint')}
+        </div>
+      </div>
+      <div style={fieldStyle}>
+        <label style={labelStyle}>{i18n('ai_helper_testdata_extra_label')}</label>
+        <textarea
+          value={extraRequirements}
+          onChange={e => setExtraRequirements(e.target.value.slice(0, context.limits.maxExtraRequirements))}
+          placeholder={i18n('ai_helper_testdata_extra_placeholder')}
+          rows={3}
+          style={{ ...getInputStyle(), resize: 'vertical', fontFamily: 'inherit' }}
+        />
+      </div>
+      {error && (
+        <div style={{ ...getAlertStyle('error'), marginBottom: SPACING.base }}>
+          <div>{error}</div>
+          {retryGuidance === 'switch-model' && (
+            <div style={{ ...TYPOGRAPHY.xs, marginTop: SPACING.xs, fontWeight: 600 }}>
+              {i18n('ai_helper_testdata_deeper_reasoning_suggestion')}
+            </div>
+          )}
+          {retryGuidance === 'manual-review' && (
+            <div style={{ ...TYPOGRAPHY.xs, marginTop: SPACING.xs, fontWeight: 600 }}>
+              {i18n('ai_helper_testdata_manual_review_suggestion')}
+            </div>
+          )}
+          {retryGuidance === 'retry' && (
+            <div style={{ ...TYPOGRAPHY.xs, marginTop: SPACING.xs }}>
+              {i18n('ai_helper_testdata_retry_suggestion')}
+            </div>
+          )}
+          {resumeCheckpointJobId && (
+            <button
+              style={{ ...getButtonStyle('secondary'), marginTop: SPACING.sm }}
+              onClick={() => void handleGenerate(resumeCheckpointJobId)}
+            >
+              {i18n('ai_helper_testdata_resume_checkpoint_btn')}
+            </button>
+          )}
+        </div>
+      )}
+      <div style={{ display: 'flex', gap: SPACING.sm, alignItems: 'center', flexWrap: 'wrap' }}>
+        <button
+          style={getButtonStyle('primary')}
+          onClick={() => void handleGenerate()}
+          disabled={!context.problem.hasStatement}
+        >
+          {i18n('ai_helper_testdata_generate_btn')}
+        </button>
+        <button
+          style={getButtonStyle('secondary')}
+          onClick={handleSkeleton}
+          title={i18n('ai_helper_testdata_skeleton_hint')}
+        >
+          {i18n('ai_helper_testdata_skeleton_btn')}
+        </button>
+      </div>
+      <div style={{ ...TYPOGRAPHY.xs, color: COLORS.textMuted, marginTop: SPACING.xs }}>
+        {i18n('ai_helper_testdata_skeleton_hint')}
+      </div>
+    </div>
+  );
+
+  const renderGenerating = () => {
+    const elapsedMinutes = Math.floor(generationElapsedSeconds / 60);
+    const elapsedSeconds = generationElapsedSeconds % 60;
+    const idleMinutes = Math.floor(generationIdleSeconds / 60);
+    const idleSeconds = generationIdleSeconds % 60;
+    const activeGroupIndex = getGenerationStageGroupIndex(generationProgress.stage);
+    const maxGroupIndex = generationMaxGroup.attempt === generationProgress.attempt
+      ? Math.max(generationMaxGroup.index, activeGroupIndex)
+      : activeGroupIndex;
+    const reworking = maxGroupIndex > activeGroupIndex && generationProgress.stage !== 'complete';
+    const heartbeatStale = generationHeartbeatSeconds >= 75;
+    const longWaitThresholdSeconds = 5 * 60;
+    return (
+      <div style={{ padding: SPACING.xl, color: COLORS.textSecondary }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: SPACING.sm, marginBottom: SPACING.base }}>
+          <div style={{
+            width: '22px', height: '22px', flex: '0 0 22px',
+            border: `3px solid ${COLORS.border}`, borderTopColor: COLORS.primary,
+            borderRadius: '50%', animation: 'spin 1s linear infinite',
+          }} />
+          <style>{'@keyframes spin { from{transform:rotate(0)} to{transform:rotate(360deg)} }'}</style>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div role="status" aria-live="polite" style={{ fontSize: '14px', fontWeight: 600, color: COLORS.textPrimary }}>
+              {i18n(`ai_helper_testdata_progress_${generationProgress.stage}`)}
+            </div>
+            <div style={{ ...TYPOGRAPHY.xs, color: COLORS.textMuted, marginTop: '2px' }}>
+              {i18n('ai_helper_testdata_progress_live')}
+              {generationProgress.attempt > 1
+                ? ` · ${i18n('ai_helper_testdata_progress_attempt', generationProgress.attempt)}`
+                : ''}
+            </div>
+          </div>
+          <div style={{ ...TYPOGRAPHY.sm, fontWeight: 600, color: COLORS.primary, whiteSpace: 'nowrap', fontVariantNumeric: 'tabular-nums' }}>
+            {i18n('ai_helper_testdata_progress_elapsed', elapsedMinutes, String(elapsedSeconds).padStart(2, '0'))}
+          </div>
+        </div>
+        <div style={{ display: 'flex', gap: SPACING.sm, flexWrap: 'wrap' }}>
+          {GENERATION_STAGE_GROUPS.map((group, index) => {
+            const completed = generationProgress.stage === 'complete' || index < activeGroupIndex;
+            const active = !completed && index === activeGroupIndex;
+            // 本轮已到达过、因定向修复需要重新执行的步骤
+            const redo = !completed && !active && index <= maxGroupIndex;
+            return (
+              <div
+                key={group.key}
+                style={{
+                  flex: '1 1 120px', minWidth: 0,
+                  display: 'flex', alignItems: 'center', gap: SPACING.sm,
+                  padding: `${SPACING.sm} ${SPACING.md}`,
+                  borderRadius: RADIUS.md,
+                  border: `1px solid ${active ? COLORS.borderFocus : COLORS.border}`,
+                  backgroundColor: active ? COLORS.primaryLight
+                    : completed ? COLORS.successBg
+                      : redo ? COLORS.warningBg : COLORS.bgHover,
+                  color: active ? COLORS.primary
+                    : completed ? COLORS.successText
+                      : redo ? COLORS.warningText : COLORS.textMuted,
+                  fontSize: '12px', fontWeight: active || completed ? 600 : 500,
+                }}
+              >
+                <span aria-hidden="true" style={{
+                  width: '20px', height: '20px', flex: '0 0 20px',
+                  display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+                  borderRadius: RADIUS.full,
+                  color: completed || active ? '#fff' : redo ? COLORS.warningText : COLORS.textMuted,
+                  backgroundColor: completed ? COLORS.success
+                    : active ? COLORS.primary
+                      : redo ? 'transparent' : COLORS.border,
+                  fontSize: redo ? '13px' : '11px', fontWeight: 700,
+                }}>
+                  {completed ? <Icon name="check" size={14} /> : redo ? <Icon name="refresh" size={14} /> : index + 1}
+                </span>
+                <span>{i18n(`ai_helper_testdata_step_${group.key}`)}</span>
+              </div>
+            );
+          })}
+        </div>
+        {reworking && (
+          <div style={{ ...TYPOGRAPHY.xs, color: COLORS.warningText, marginTop: SPACING.sm }}>
+            {i18n('ai_helper_testdata_progress_rework_notice')}
+          </div>
+        )}
+        <div style={{ ...TYPOGRAPHY.xs, color: COLORS.textMuted, marginTop: SPACING.sm }}>
+          {i18n('ai_helper_testdata_generating_hint')}
+        </div>
+        {generationIdleSeconds >= 30 && (
+          <div style={{ ...TYPOGRAPHY.xs, color: COLORS.textMuted, marginTop: SPACING.xs }}>
+            {i18n(
+              'ai_helper_testdata_progress_last_update',
+              idleMinutes,
+              String(idleSeconds).padStart(2, '0'),
+            )}
+          </div>
+        )}
+        {generationIdleSeconds >= longWaitThresholdSeconds && generationProgress.stage !== 'model_fallback' && (
+          <div style={{ ...getAlertStyle('info'), marginTop: SPACING.base }}>
+            {i18n('ai_helper_testdata_progress_waiting_long')}
+          </div>
+        )}
+        <div style={{
+          ...getAlertStyle(generationJobId && heartbeatStale ? 'warning' : 'success'),
+          marginTop: SPACING.base,
+        }}>
+          {generationJobId
+            ? i18n(
+              heartbeatStale
+                ? 'ai_helper_testdata_progress_heartbeat_stale'
+                : 'ai_helper_testdata_progress_heartbeat',
+              generationHeartbeatSeconds,
+            )
+            : i18n('ai_helper_testdata_background_starting')}
+          {generationJobId && !heartbeatStale && (
+            <div style={{ ...TYPOGRAPHY.xs, marginTop: SPACING.xs }}>
+              {i18n('ai_helper_testdata_background_active')}
+            </div>
+          )}
+        </div>
+        <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: SPACING.base }}>
+          <button
+            type="button"
+            style={getButtonStyle('secondary')}
+            onClick={handleCancelGeneration}
+            disabled={generationCanceling || !generationJobId}
+          >
+            {i18n(generationCanceling
+              ? 'ai_helper_testdata_canceling'
+              : 'ai_helper_testdata_cancel')}
+          </button>
+        </div>
+      </div>
+    );
+  };
+
+  const renderPreview = () => {
+    if (!plan) return null;
+    const selectedCount = plan.files.filter(f => selectedFiles[f.name]).length;
+    return (
+      <div>
+        <TestdataPreviewSummary plan={plan} hasWrittenFiles={hasWrittenFiles} />
+        <h3 style={{ fontSize: '14px', margin: '0 0 12px' }}>{i18n('ai_helper_testdata_files_title')}</h3>
+        <TestdataFilePreview
+          files={plan.files}
+          activeFile={activeFile}
+          selectedFiles={selectedFiles}
+          fileContents={fileContents}
+          existingFiles={existingFileSet}
+          onOpen={setActiveFile}
+          onToggle={name => setSelectedFiles(prev => ({ ...prev, [name]: !prev[name] }))}
+          onEdit={(name, content) => setFileContents(prev => ({ ...prev, [name]: content }))}
+        />
+        {error && (
+          <div style={{ ...getAlertStyle('error'), marginTop: SPACING.md }}>{error}</div>
+        )}
+        <div style={{ display: 'flex', gap: SPACING.sm, marginTop: SPACING.base, flexWrap: 'wrap', alignItems: 'center' }}>
+          <button style={getButtonStyle('primary')} onClick={handleApply} disabled={outcomeSubmitting || selectedCount === 0}>
+            {i18n('ai_helper_testdata_apply_btn', selectedCount)}
+          </button>
+          <button
+            style={getButtonStyle('secondary')}
+            onClick={handleRegenerate}
+            disabled={outcomeSubmitting}
+          >
+            {i18n('ai_helper_testdata_regenerate_btn')}
+          </button>
+          <button
+            style={getButtonStyle('secondary')}
+            onClick={() => void handleDiscard()}
+            disabled={outcomeSubmitting}
+          >
+            {i18n('ai_helper_testdata_discard_btn')}
+          </button>
+        </div>
+      </div>
+    );
+  };
+
+  const renderApplying = () => (
+    <div style={{ textAlign: 'center', padding: SPACING.xl, color: COLORS.textSecondary, fontSize: '14px' }}>
+      {i18n('ai_helper_testdata_applying')}
+    </div>
+  );
+
+  const renderApplied = () => (
+    <div>
+      {applyPresentation === 'conflict' ? (
+        <div style={{ ...getAlertStyle('warning'), marginBottom: SPACING.base }}>
+          <div>{error}</div>
+          <div style={{ marginTop: SPACING.xs }}>
+            {i18n('ai_helper_testdata_apply_partial', applyResult?.written.length ?? 0, applyResult?.failed.length ?? 0)}
+          </div>
+          {applyResult?.failed.map(f => (
+            <div key={f.name} style={{ fontFamily: MONO_FONT, fontSize: '12px', marginTop: SPACING.xs }}>
+              {f.name}: {f.error}
+            </div>
+          ))}
+        </div>
+      ) : applyPresentation === 'success' ? (
+        <div style={{ ...getAlertStyle('success'), marginBottom: SPACING.base }}>
+          {i18n('ai_helper_testdata_apply_success', applyResult?.written.length ?? 0)}
+        </div>
+      ) : (
+        <div style={{ ...getAlertStyle('warning'), marginBottom: SPACING.base }}>
+          {i18n('ai_helper_testdata_apply_partial', applyResult?.written.length ?? 0, applyResult?.failed.length ?? 0)}
+          {applyResult?.failed.map(f => (
+            <div key={f.name} style={{ fontFamily: MONO_FONT, fontSize: '12px', marginTop: SPACING.xs }}>
+              {f.name}: {f.error}
+            </div>
+          ))}
+        </div>
+      )}
+      <div style={{ ...getAlertStyle('info'), marginBottom: SPACING.base }}>
+        {i18n('ai_helper_testdata_apply_next_steps')}
+      </div>
+      <div style={{ display: 'flex', gap: SPACING.sm }}>
+        <button style={getButtonStyle('primary')} onClick={() => window.location.reload()}>
+          {i18n('ai_helper_testdata_refresh_btn')}
+        </button>
+        {(applyPresentation === 'conflict' || (applyResult?.failed.length ?? 0) > 0) && (
+          <button style={getButtonStyle('secondary')} onClick={() => { setPhase('preview'); setError(null); }}>
+            {i18n('ai_helper_testdata_back_to_preview_btn')}
+          </button>
+        )}
+      </div>
+    </div>
+  );
+
+  // Hydro 只会为首屏已有的 .section 自动添加 visible；动态插入的面板需自行标记。
+  return (
+    <div style={sectionStyle} className="section visible">
+      <button type="button" aria-expanded={!collapsed}
+        aria-label={i18n('ai_helper_testdata_panel_title')}
+        style={{ ...headerStyle, width: '100%', border: 0, background: 'transparent', font: 'inherit' }}
+        onClick={() => setCollapsed(prev => !prev)}>
+        <span style={{ display: 'flex', alignItems: 'center', gap: SPACING.sm }}>
+          <span style={{ fontSize: '18px' }}><Icon name="flask" size={18} /></span>
+          <span style={{ fontSize: '16px', fontWeight: 600, color: COLORS.textPrimary }}>
+            {i18n('ai_helper_testdata_panel_title')}
+          </span>
+        </span>
+        <span style={{ color: COLORS.textMuted, fontSize: '13px' }}>
+          {collapsed ? i18n('ai_helper_testdata_expand') : i18n('ai_helper_testdata_collapse')} <Icon name={collapsed ? 'chevronDown' : 'chevronUp'} />
+        </span>
+      </button>
+      {!collapsed && (
+        <div style={{ padding: `0 ${SPACING.base} ${SPACING.base}` }}>
+          <div style={{ ...TYPOGRAPHY.xs, color: COLORS.textMuted, marginBottom: SPACING.base }}>
+            {i18n('ai_helper_testdata_panel_subtitle')}
+          </div>
+          {phase === 'form' && renderForm()}
+          {phase === 'form' && (
+            <DirectFallbackConfirmationView
+              visible={directFallbackConfirmationRequired}
+              message={i18n('ai_helper_testdata_direct_confirmation_required')}
+              actionLabel={i18n('ai_helper_testdata_direct_confirmation_action')}
+              containerStyle={{ ...getAlertStyle('warning'), marginBottom: SPACING.base }}
+              buttonStyle={{ ...getButtonStyle('secondary'), marginTop: SPACING.sm }}
+              onConfirm={retryPayload => {
+                setConfirmDirectFallback(retryPayload.confirmDirectFallback);
+                void handleGenerate(undefined, retryPayload.confirmDirectFallback);
+              }}
+            />
+          )}
+          {phase === 'generating' && renderGenerating()}
+          {phase === 'preview' && renderPreview()}
+          {phase === 'applying' && renderApplying()}
+          {phase === 'applied' && renderApplied()}
+        </div>
+      )}
+    </div>
+  );
+};

@@ -1,0 +1,96 @@
+declare module 'hydrooj' {
+  import { Collection, Db, Cursor } from 'mongodb';
+
+  export interface Context {
+    Route(name: string, path: string, handler: any, privilege?: any): void;
+    [key: string]: any;
+  }
+
+  export class Handler {
+    ctx: Context;
+    request: any;
+    response: any;
+    user?: any;
+    args?: any;
+    session?: any;
+    translate(str: string, ...params: any[]): string;
+    limitRate(op: string, periodSecs: number, maxOperations: number, defaultKey?: string): Promise<void>;
+    checkPerm(...perm: any[]): void;
+  }
+
+  export const PRIV: Record<string, any>;
+
+  // 域权限位（BigInt），如 PERM_EDIT_PROBLEM / PERM_EDIT_PROBLEM_SELF
+  export const PERM: Record<string, any>;
+
+  export function definePlugin<TConfig = any>(options: {
+    name?: string;
+    using?: (keyof Context)[];
+    schema?: any;
+    apply: (ctx: Context, config: TConfig) => void | Promise<void>;
+  }): {
+    name?: string;
+    schema?: any;
+    apply: (ctx: Context, config: TConfig) => void | Promise<void>;
+  };
+
+  export const Schema: any;
+
+  export const superagent: any;
+
+  export interface DbService {
+    collection<T = any>(name: string): Collection<T>;
+  }
+
+  export const db: DbService;
+
+  export const RecordModel: {
+    getMulti(domainId: string, query: any): {
+      sort(order: any): {
+        limit(n: number): {
+          project(projection: any): {
+            toArray(): Promise<any[]>;
+          };
+        };
+      };
+    };
+  };
+
+  export const ProblemModel: any;
+
+  export const StorageModel: {
+    get(path: string): Promise<NodeJS.ReadableStream | Buffer | string>;
+  };
+
+  export const SystemModel: {
+    get(key: string): any;
+  };
+
+  export const ContestModel: {
+    get(domainId: string, tid: any): Promise<any>;
+    isOngoing(tdoc: any, tsdoc?: any): boolean;
+    isDone(tdoc: any, tsdoc?: any): boolean;
+  };
+
+  // STATUS enum from @hydrooj/common, re-exported via builtin
+  export const STATUS: {
+    STATUS_WAITING: number;
+    STATUS_ACCEPTED: number;
+    STATUS_WRONG_ANSWER: number;
+    STATUS_TIME_LIMIT_EXCEEDED: number;
+    STATUS_MEMORY_LIMIT_EXCEEDED: number;
+    STATUS_OUTPUT_LIMIT_EXCEEDED: number;
+    STATUS_RUNTIME_ERROR: number;
+    STATUS_COMPILE_ERROR: number;
+    STATUS_SYSTEM_ERROR: number;
+    STATUS_CANCELED: number;
+    STATUS_ETC: number;
+    STATUS_HACKED: number;
+    STATUS_JUDGING: number;
+    STATUS_COMPILING: number;
+    STATUS_FETCHED: number;
+    STATUS_IGNORED: number;
+    STATUS_FORMAT_ERROR: number;
+    [key: string]: number;
+  };
+}

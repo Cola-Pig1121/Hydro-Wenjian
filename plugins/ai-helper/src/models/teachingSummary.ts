@@ -1,0 +1,344 @@
+/**
+ * TeachingSummary Model - 教学总结数据模型
+ *
+ * 管理竞赛教学分析总结，提供对学生学习模式的洞察
+ */
+
+import type { Db, Collection } from 'mongodb';
+import { type ObjectIdType } from '../utils/mongo';
+import { ensureObjectId } from '../utils/ensureObjectId';
+
+export type FindingDimension =
+  | 'commonError' | 'comprehension' | 'strategy'
+  | 'atRisk' | 'difficulty' | 'progress' | 'cognitivePath' | 'aiEffectiveness'
+  | 'errorCluster' | 'temporalPattern' | 'crossCorrelation';
+
+export type TemporalPatternLabel =
+  | 'strategic_solver'
+  | 'disengaged'
+  | 'burst_then_quit'
+  | 'stuck_silent'
+  | 'persistent_learner';
+
+export interface TemporalFeatures {
+  totalSubmissions: number;
+  totalActiveMinutes: number;
+  medianInterval: number | null;
+  burstCount: number;
+  distinctSessions: number;
+  firstACIndex: number | null;
+  timeSinceLastSubmit: number | null;
+}
+
+export interface StudentTemporalProfile {
+  uid: number;
+  pid: number;
+  pattern: TemporalPatternLabel;
+  features: TemporalFeatures;
+  finalStatus: number;
+}
+
+export interface FillInBlank {
+  line: number;
+  original: string;
+  hint: string;
+}
+
+export interface FillInExercise {
+  pid: number;
+  title: string;
+  lang: string;
+  reason: string;
+  code: string;
+  blanks: FillInBlank[];
+  alternatives?: Array<{ uid: number; code: string; score: number }>;
+}
+
+export type ConfidenceLevel = 'high' | 'low' | 'insufficient_data';
+
+export interface TeachingFinding {
+  id: string;
+  dimension: FindingDimension;
+  severity: 'high' | 'medium' | 'low';
+  title: string;
+  evidence: {
+    affectedStudents: number[];
+    affectedProblems: number[];
+    metrics: Record<string, number>;
+    samples?: {
+      code?: string[];
+      conversations?: string[];
+      codeSources?: Array<{
+        recordId?: string;
+        uid: number;
+        pid: number;
+        status: number;
+        lang?: string;
+        submittedAt?: string;
+        truncated: boolean;
+        resolved: boolean;
+      }>;
+    };
+  };
+  needsDeepDive: boolean;
+  aiSuggestion?: string;
+  aiAnalysis?: string;
+  confidence?: ConfidenceLevel;
+  fillInExercise?: FillInExercise;
+  /** 错误签名（来自 errorCluster 维度，合并后随主发现保留） */
+  errorSignature?: string;
+  /** 判题状态码，用于匹配错误样本和聚类，不能从展示标题猜测。 */
+  errorStatus?: number;
+  /** 关联观察只能合并回其原始发现，避免把其他错误组的比例套给本组。 */
+  sourceFindingId?: string;
+  /** 被折叠进本发现的关联洞察（如交叉关联、错误聚类的补充信息），展开时展示 */
+  supplements?: string[];
+  /** 次要发现：不单独成卡片，前端在"其他观察"中一行带过 */
+  isSecondary?: boolean;
+}
+
+
+export interface TeachingSummary {
+  _id: ObjectIdType;
+  domainId: string;
+  contestId: ObjectIdType;
+  contestTitle: string;
+  contestContent: string;
+  teachingFocus?: string;
+  createdBy: number;
+  createdAt: Date;
+  dataSnapshotAt: Date;
+  status: 'pending' | 'generating' | 'completed' | 'failed';
+  /** Safe localized failure category; never persist provider diagnostics here. */
+  errorMessageKey?: string;
+  progressPhase?: 'collecting_data' | 'analyzing' | 'generating_suggestion' | 'deep_diving' | 'saving';
+  stats: {
+    totalStudents: number;
+    participatedStudents: number;
+    aiUserCount: number;
+    problemCount: number;
+  };
+  findings: TeachingFinding[];
+  overallSuggestion: string;
+  /** 课后强化训练（挖空作业）markdown，独立于 overallSuggestion 存储；旧文档无此字段（作业拼在 overallSuggestion 末尾） */
+  homeworkText?: string;
+  /** 发现项涉及的学生 uid -> 用户名 映射，供前端展示名单 */
+  studentNames?: Record<string, string>;
+  deepDiveResults: Record<string, string>;
+  feedback?: { rating: 'up' | 'down'; comment?: string };
+  tokenUsage: { promptTokens: number; completionTokens: number };
+  generationTimeMs: number;
+}
+
+export class TeachingSummaryModel {
+  private collection: Collection<TeachingSummary>;
+
+  constructor(db: Db) {
+    this.collection = db.collection<TeachingSummary>('ai_teaching_summaries');
+  }
+
+  /**
+   * 确保索引已创建
+   */
+  async ensureIndexes(): Promise<void> {
+    await this.collection.createIndex(
+      { domainId: 1, createdAt: -1 },
+      { name: 'idx_domainId_createdAt' },
+    );
+
+    await this.collection.createIndex(
+      { domainId: 1, contestId: 1 },
+      { name: 'idx_domainId_contestId' },
+    );
+
+    console.log('[TeachingSummaryModel] Indexes created successfully');
+  }
+
+  /**
+   * 创建新的教学总结（初始状态为 pending）
+   */
+  async create(params: {
+    domainId: string;
+    contestId: ObjectIdType;
+    contestTitle: string;
+    contestContent: string;
+    teachingFocus?: string;
+    createdBy: number;
+    dataSnapshotAt: Date;
+  }): Promise<ObjectIdType> {
+    const doc: Omit<TeachingSummary, '_id'> = {
+      domainId: params.domainId,
+      contestId: params.contestId,
+      contestTitle: params.contestTitle,
+      contestContent: params.contestContent,
+      teachingFocus: params.teachingFocus,
+      createdBy: params.createdBy,
+      createdAt: new Date(),
+      dataSnapshotAt: params.dataSnapshotAt,
+      status: 'pending',
+      stats: {
+        totalStudents: 0,
+        participatedStudents: 0,
+        aiUserCount: 0,
+        problemCount: 0,
+      },
+      findings: [],
+      overallSuggestion: '',
+      deepDiveResults: {},
+      tokenUsage: { promptTokens: 0, completionTokens: 0 },
+      generationTimeMs: 0,
+    };
+
+    const result = await this.collection.insertOne(doc as TeachingSummary);
+    return result.insertedId;
+  }
+
+  /**
+   * 根据 ID 查找教学总结
+   */
+  async findById(id: string | ObjectIdType): Promise<TeachingSummary | null> {
+    const _id = ensureObjectId(id);
+    return this.collection.findOne({ _id });
+  }
+
+  /**
+   * 查找指定域+竞赛的最新教学总结
+   */
+  async findByContest(
+    domainId: string,
+    contestId: ObjectIdType,
+  ): Promise<TeachingSummary | null> {
+    return this.collection.findOne(
+      { domainId, contestId },
+      { sort: { createdAt: -1 } },
+    );
+  }
+
+  /**
+   * 分页查询指定域的教学总结列表（按创建时间倒序）
+   */
+  async findByDomain(
+    domainId: string,
+    page: number,
+    limit: number,
+  ): Promise<TeachingSummary[]> {
+    const skip = (page - 1) * limit;
+    return this.collection
+      .find({ domainId })
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(limit)
+      .toArray();
+  }
+
+  /**
+   * 统计指定域的教学总结数量
+   */
+  async countByDomain(domainId: string): Promise<number> {
+    return this.collection.countDocuments({ domainId });
+  }
+
+  /**
+   * 统计指定域的反馈数据（up / down 各多少）
+   */
+  async getFeedbackStats(domainId: string): Promise<{ up: number; down: number }> {
+    const results = await this.collection.aggregate<{ _id: string; count: number }>([
+      { $match: { domainId, 'feedback.rating': { $exists: true } } },
+      { $group: { _id: '$feedback.rating', count: { $sum: 1 } } },
+    ]).toArray();
+    let up = 0;
+    let down = 0;
+    for (const r of results) {
+      if (r._id === 'up') up = r.count;
+      else if (r._id === 'down') down = r.count;
+    }
+    return { up, down };
+  }
+
+  /**
+   * 更新总结状态
+   */
+  async updateStatus(
+    id: string | ObjectIdType,
+    status: TeachingSummary['status'],
+    errorMessageKey?: string,
+  ): Promise<void> {
+    const _id = ensureObjectId(id);
+    await this.collection.updateOne({ _id }, {
+      $set: { status, ...(errorMessageKey ? { errorMessageKey } : {}) },
+      ...(!errorMessageKey ? { $unset: { errorMessageKey: '' } } : {}),
+    });
+  }
+
+  /**
+   * 更新生成进度阶段
+   */
+  async updateProgress(
+    id: string | ObjectIdType,
+    phase: TeachingSummary['progressPhase'],
+  ): Promise<void> {
+    const _id = ensureObjectId(id);
+    await this.collection.updateOne({ _id }, { $set: { progressPhase: phase } });
+  }
+
+  /**
+   * 保存分析结果并将状态设置为 completed
+   */
+  async saveResults(
+    id: string | ObjectIdType,
+    data: {
+      dataSnapshotAt?: Date;
+      stats: TeachingSummary['stats'];
+      findings: TeachingFinding[];
+      overallSuggestion: string;
+      homeworkText?: string;
+      studentNames?: Record<string, string>;
+      deepDiveResults?: Record<string, string>;
+      tokenUsage: TeachingSummary['tokenUsage'];
+      generationTimeMs: number;
+    },
+  ): Promise<void> {
+    const _id = ensureObjectId(id);
+    await this.collection.updateOne(
+      { _id },
+      {
+        $set: {
+          status: 'completed',
+          ...(data.dataSnapshotAt ? { dataSnapshotAt: data.dataSnapshotAt } : {}),
+          stats: data.stats,
+          findings: data.findings,
+          overallSuggestion: data.overallSuggestion,
+          homeworkText: data.homeworkText ?? '',
+          studentNames: data.studentNames ?? {},
+          deepDiveResults: data.deepDiveResults ?? {},
+          tokenUsage: data.tokenUsage,
+          generationTimeMs: data.generationTimeMs,
+        },
+      },
+    );
+  }
+
+  /**
+   * 保存教师反馈
+   */
+  async saveFeedback(
+    id: string | ObjectIdType,
+    rating: 'up' | 'down',
+    comment?: string,
+  ): Promise<void> {
+    const _id = ensureObjectId(id);
+    const feedback: TeachingSummary['feedback'] = { rating };
+    if (comment !== undefined) {
+      feedback.comment = comment;
+    }
+    await this.collection.updateOne({ _id }, { $set: { feedback } });
+  }
+
+  /**
+   * 删除教学总结
+   */
+  async deleteById(id: string | ObjectIdType): Promise<void> {
+    const _id = ensureObjectId(id);
+    await this.collection.deleteOne({ _id });
+  }
+}

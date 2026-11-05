@@ -1,0 +1,10 @@
+{
+    "name": "@hydrooj/user-list",
+    "version": "0.1.0",
+    "description": "Hydro 用户管理一站式面板：修改用户信息 / 重置密码 / 调整权限与域角色",
+    "license": "AGPL-3.0-or-later",
+    "repository": {
+        "type": "git",
+        "url": "https://github.com/hydro-dev/Hydro"
+    }
+}

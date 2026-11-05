@@ -1,0 +1,908 @@
+/**
+ * AI 配置页面 Handler
+ * 处理管理员配置页面的渲染和配置请求
+ */
+
+import { Handler, PRIV } from 'hydrooj';
+import {
+  AIConfig, AIConfigModel, APIEndpoint, SelectedModel, BudgetConfig,
+  ScenarioModelConfig, AI_SCENARIOS, TESTDATA_MODEL_ROLES,
+  type TestdataRoleModelConfig,
+} from '../models/aiConfig';
+import { decrypt, encrypt, maskApiKey } from '../lib/crypto';
+import { builtinJailbreakPatternSources } from '../constants/jailbreakRules';
+import { JailbreakLogModel } from '../models/jailbreakLog';
+import type { JailbreakLog, JailbreakLogListFilters } from '../models/jailbreakLog';
+import { rejectIfCsrfInvalid } from '../lib/csrfHelper';
+import { applyRateLimit } from '../lib/rateLimitHelper';
+import { translateWithParams } from '../utils/i18nHelper';
+import { getDomainId } from '../utils/domainHelper';
+import { parseProblemId } from '../utils/problemIdHelper';
+import type { PluginInstallModel } from '../models/pluginInstall';
+import { ObjectId } from '../utils/mongo';
+import type { ProblemDocument, UserDocument } from '../types/hydrooj';
+import type {
+  SafetyAction,
+  SafetyDetectionSource,
+  SafetyReviewStatus,
+  SafetyViolationCategory,
+} from '../types/safety';
+
+/**
+ * 更新配置请求接口（兼容旧版 + 新版多端点）
+ */
+interface UpdateConfigRequest {
+  // 旧版单端点字段（向后兼容）
+  apiBaseUrl?: string;
+  modelName?: string;
+  apiKey?: string;
+  // 新版多端点字段
+  endpoints?: Array<{
+    id?: string;
+    name: string;
+    apiBaseUrl: string;
+    apiKey?: string;  // 明文 API Key，仅新建或更新时传入
+    models?: string[];
+    modelChatSupport?: Record<string, boolean>;
+    enabled?: boolean;
+  }>;
+  selectedModels?: SelectedModel[];
+  scenarioModels?: ScenarioModelConfig;
+  testdataRoleModels?: TestdataRoleModelConfig;
+  // 通用字段
+  rateLimitPerMinute?: number;
+  timeoutSeconds?: number;
+  systemPromptTemplate?: string;
+  extraJailbreakPatternsText?: string;
+  budgetConfig?: BudgetConfig;
+  telemetryEnabled?: boolean;
+}
+
+/**
+ * AdminConfigHandler - AI 配置页面
+ * GET /ai-helper/admin/config
+ */
+export class AdminConfigHandler extends Handler {
+  async get() {
+    try {
+      // 当 Accept 包含 text/html 时才渲染页面；其他情况返回 JSON 配置
+      const accept = this.request.headers.accept || '';
+      const prefersHtml = accept.includes('text/html');
+
+      if (prefersHtml) {
+        this.response.template = 'ai-helper/admin_config.html';
+        this.response.body = {};
+        return;
+      }
+
+      const aiConfigModel: AIConfigModel = this.ctx.get('aiConfigModel');
+      const pluginInstallModel: PluginInstallModel = this.ctx.get('pluginInstallModel');
+
+      // 获取遥测状态
+      let telemetry: { enabled: boolean; instanceId: string; lastReportAt?: string; version: string } | null = null;
+      try {
+        const install = await pluginInstallModel.getInstall();
+        if (install) {
+          telemetry = {
+            enabled: install.telemetryEnabled,
+            instanceId: install.instanceId.slice(-8),
+            lastReportAt: install.lastReportAt?.toISOString(),
+            version: install.lastVersion,
+          };
+        }
+      } catch { /* non-critical */ }
+
+      const config = await aiConfigModel.getConfig();
+
+      if (!config) {
+        this.response.body = {
+          config: null,
+          telemetry,
+          builtinJailbreakPatterns: builtinJailbreakPatternSources,
+        };
+        this.response.type = 'application/json';
+        return;
+      }
+
+      // 处理端点的 API Key 脱敏
+      const endpointsWithMaskedKeys = (config.endpoints || []).map(ep => {
+        let apiKeyMasked = '';
+        let hasApiKey = false;
+        try {
+          if (ep.apiKeyEncrypted) {
+            const apiKeyPlain = decrypt(ep.apiKeyEncrypted);
+            apiKeyMasked = maskApiKey(apiKeyPlain);
+            hasApiKey = true;
+          }
+        } catch {
+          hasApiKey = false;
+        }
+        return {
+          id: ep.id,
+          name: ep.name,
+          apiBaseUrl: ep.apiBaseUrl,
+          models: ep.models || [],
+          modelChatSupport: ep.modelChatSupport,
+          modelsLastFetched: ep.modelsLastFetched?.toISOString(),
+          enabled: ep.enabled,
+          apiKeyMasked,
+          hasApiKey,
+        };
+      });
+
+      // 兼容旧版：处理旧版单 API Key
+      let apiKeyMasked = '';
+      let hasApiKey = false;
+      try {
+        if (config.apiKeyEncrypted) {
+          const apiKeyPlain = decrypt(config.apiKeyEncrypted);
+          apiKeyMasked = maskApiKey(apiKeyPlain);
+          hasApiKey = true;
+        }
+      } catch (err) {
+        console.error('[AdminConfigHandler] API Key 解密失败:', err instanceof Error ? err.message : 'unknown');
+        hasApiKey = false;
+      }
+
+      this.response.body = {
+        config: {
+          endpoints: endpointsWithMaskedKeys,
+          selectedModels: config.selectedModels || [],
+          scenarioModels: config.scenarioModels || {},
+          testdataRoleModels: config.testdataRoleModels || {},
+          apiBaseUrl: config.apiBaseUrl,
+          modelName: config.modelName,
+          rateLimitPerMinute: config.rateLimitPerMinute,
+          timeoutSeconds: config.timeoutSeconds,
+          systemPromptTemplate: config.systemPromptTemplate,
+          extraJailbreakPatternsText: config.extraJailbreakPatternsText || '',
+          budgetConfig: config.budgetConfig || {},
+          apiKeyMasked,
+          hasApiKey,
+          updatedAt: config.updatedAt.toISOString()
+        },
+        telemetry,
+        builtinJailbreakPatterns: builtinJailbreakPatternSources,
+      };
+      this.response.type = 'application/json';
+    } catch (err) {
+      console.error('[AI Helper] AdminConfigHandler error:', err instanceof Error ? err.message : 'unknown');
+      this.response.status = 500;
+      this.response.body = { error: this.translate('ai_helper_err_internal'), code: 'INTERNAL_ERROR' };
+      this.response.type = 'application/json';
+    }
+  }
+
+  /**
+   * PUT /ai-helper/admin/config
+   * 更新配置（支持旧版单端点和新版多端点）
+   */
+  async put() {
+    try {
+      if (rejectIfCsrfInvalid(this)) return;
+      const aiConfigModel: AIConfigModel = this.ctx.get('aiConfigModel');
+      const body = this.request.body as UpdateConfigRequest;
+
+      const partial: Partial<Omit<AIConfig, '_id' | 'updatedAt'>> = {};
+
+      // 处理新版多端点配置
+      if (body.endpoints !== undefined) {
+        const existingConfig = await aiConfigModel.getConfig();
+        const existingEndpoints = existingConfig?.endpoints || [];
+
+        const newEndpoints: APIEndpoint[] = [];
+        const idMapping: Record<string, string> = {}; // 临时 ID → 真实 UUID
+        for (const ep of body.endpoints) {
+          // 检查是否为临时 ID（前端为未保存端点生成 temp-xxx）
+          const isTemp = ep.id && ep.id.startsWith('temp-');
+          // 查找是否有现有端点
+          const existing = (ep.id && !isTemp) ? existingEndpoints.find(e => e.id === ep.id) : null;
+
+          let apiKeyEncrypted = existing?.apiKeyEncrypted || '';
+
+          // 如果提供了新的 API Key，加密它
+          if (ep.apiKey && ep.apiKey.trim()) {
+            try {
+              apiKeyEncrypted = encrypt(ep.apiKey.trim());
+            } catch (_err) {
+              this.response.status = 500;
+              this.response.body = {
+                error: translateWithParams(this, 'ai_helper_config_endpoint_encrypt_failed', ep.name),
+                code: 'ENCRYPT_FAILED',
+              };
+              this.response.type = 'application/json';
+              return;
+            }
+          }
+
+          const realId = existing ? ep.id : (await import('crypto')).randomUUID();
+          if (isTemp && ep.id) {
+            idMapping[ep.id] = realId;
+          }
+
+          newEndpoints.push({
+            id: realId,
+            name: ep.name,
+            apiBaseUrl: ep.apiBaseUrl,
+            apiKeyEncrypted,
+            models: ep.models || existing?.models || [],
+            modelChatSupport: Object.fromEntries(Object.entries(ep.modelChatSupport || existing?.modelChatSupport || {})
+              .filter(([id, support]) => typeof support === 'boolean' && (ep.models || existing?.models || []).includes(id))),
+            modelsLastFetched: existing?.modelsLastFetched,
+            enabled: ep.enabled !== undefined ? ep.enabled : true,
+          });
+        }
+        partial.endpoints = newEndpoints;
+
+        // 重映射 selectedModels 中的临时 ID
+        if (body.selectedModels !== undefined && Object.keys(idMapping).length > 0) {
+          body.selectedModels = body.selectedModels.map(sm => ({
+            ...sm,
+            endpointId: idMapping[sm.endpointId] || sm.endpointId,
+          }));
+        }
+
+        // 重映射 scenarioModels 中的临时 ID
+        if (body.scenarioModels !== undefined && Object.keys(idMapping).length > 0) {
+          const remapped: ScenarioModelConfig = {};
+          for (const scenario of AI_SCENARIOS) {
+            const chain = body.scenarioModels[scenario];
+            if (Array.isArray(chain)) {
+              remapped[scenario] = chain.map(sm => ({
+                ...sm,
+                endpointId: idMapping[sm.endpointId] || sm.endpointId,
+              }));
+            }
+          }
+          body.scenarioModels = remapped;
+        }
+
+        if (body.testdataRoleModels !== undefined && Object.keys(idMapping).length > 0) {
+          const remapped: TestdataRoleModelConfig = {};
+          for (const role of TESTDATA_MODEL_ROLES) {
+            const chain = body.testdataRoleModels[role];
+            if (Array.isArray(chain)) {
+              remapped[role] = chain.map(sm => ({
+                ...sm,
+                endpointId: idMapping[sm.endpointId] || sm.endpointId,
+              }));
+            }
+          }
+          body.testdataRoleModels = remapped;
+        }
+      }
+
+      // 处理选中的模型
+      if (body.selectedModels !== undefined) {
+        partial.selectedModels = body.selectedModels;
+      }
+
+      // 处理按场景覆盖的模型链（仅保留已知场景和合法条目）
+      if (body.scenarioModels !== undefined) {
+        const sanitized: ScenarioModelConfig = {};
+        for (const scenario of AI_SCENARIOS) {
+          const chain = body.scenarioModels?.[scenario];
+          if (Array.isArray(chain)) {
+            sanitized[scenario] = chain
+              .filter(sm => sm && typeof sm.endpointId === 'string' && typeof sm.modelName === 'string')
+              .map(sm => ({ endpointId: sm.endpointId, modelName: sm.modelName }));
+          }
+        }
+        partial.scenarioModels = sanitized;
+      }
+
+
+      if (body.testdataRoleModels !== undefined) {
+        const sanitized: TestdataRoleModelConfig = {};
+        for (const role of TESTDATA_MODEL_ROLES) {
+          const chain = body.testdataRoleModels?.[role];
+          if (Array.isArray(chain)) {
+            sanitized[role] = chain
+              .filter(sm => sm && typeof sm.endpointId === 'string' && typeof sm.modelName === 'string')
+              .map(sm => ({ endpointId: sm.endpointId, modelName: sm.modelName }));
+          }
+        }
+        partial.testdataRoleModels = sanitized;
+      }
+
+      // 旧版单端点字段（向后兼容）
+      if (body.apiBaseUrl !== undefined) {
+        partial.apiBaseUrl = body.apiBaseUrl.trim();
+      }
+
+      if (body.modelName !== undefined) {
+        partial.modelName = body.modelName.trim();
+      }
+
+      if (body.rateLimitPerMinute !== undefined) {
+        const rate = parseInt(String(body.rateLimitPerMinute), 10);
+        if (Number.isNaN(rate) || rate < 0) {
+          this.response.status = 400;
+          this.response.body = { error: this.translate('ai_helper_config_rate_limit_invalid'), code: 'INVALID_RATE_LIMIT' };
+          this.response.type = 'application/json';
+          return;
+        }
+        partial.rateLimitPerMinute = rate;
+      }
+
+      if (body.timeoutSeconds !== undefined) {
+        const timeout = parseInt(String(body.timeoutSeconds), 10);
+        if (timeout <= 0) {
+          this.response.status = 400;
+          this.response.body = { error: this.translate('ai_helper_config_timeout_invalid'), code: 'INVALID_TIMEOUT' };
+          this.response.type = 'application/json';
+          return;
+        }
+        partial.timeoutSeconds = timeout;
+      }
+
+      if (body.systemPromptTemplate !== undefined) {
+        partial.systemPromptTemplate = body.systemPromptTemplate;
+      }
+
+      if (body.extraJailbreakPatternsText !== undefined) {
+        partial.extraJailbreakPatternsText = body.extraJailbreakPatternsText;
+      }
+
+      if (body.budgetConfig !== undefined) {
+        const bc = body.budgetConfig;
+        partial.budgetConfig = {
+          dailyTokenLimitPerUser: Math.max(0, Math.floor(Number(bc.dailyTokenLimitPerUser) || 0)),
+          dailyTokenLimitPerDomain: Math.max(0, Math.floor(Number(bc.dailyTokenLimitPerDomain) || 0)),
+          monthlyTokenLimitPerDomain: Math.max(0, Math.floor(Number(bc.monthlyTokenLimitPerDomain) || 0)),
+          softLimitPercent: Math.min(100, Math.max(0, Math.floor(Number(bc.softLimitPercent) || 80))),
+        };
+      }
+
+      // 遥测开关
+      if (body.telemetryEnabled !== undefined) {
+        try {
+          const pim: PluginInstallModel = this.ctx.get('pluginInstallModel');
+          await pim.updateTelemetryEnabled(!!body.telemetryEnabled);
+        } catch (err) {
+          console.error('[AdminConfigHandler] Update telemetry failed:', err);
+        }
+      }
+
+      // 旧版单 API Key（向后兼容）
+      if (body.apiKey !== undefined && body.apiKey !== '') {
+        try {
+          partial.apiKeyEncrypted = encrypt(body.apiKey.trim());
+        } catch (_err) {
+          this.response.status = 500;
+          this.response.body = {
+            error: this.translate('ai_helper_config_apikey_encrypt_failed'),
+            code: 'ENCRYPT_FAILED',
+          };
+          this.response.type = 'application/json';
+          return;
+        }
+      }
+
+      await aiConfigModel.updateConfig(partial);
+
+      const updatedConfig = await aiConfigModel.getConfig();
+      if (!updatedConfig) {
+        throw new Error('配置更新后读取失败');
+      }
+
+      // 处理端点的 API Key 脱敏
+      const endpointsWithMaskedKeys = (updatedConfig.endpoints || []).map(ep => {
+        let apiKeyMasked = '';
+        let hasApiKey = false;
+        try {
+          if (ep.apiKeyEncrypted) {
+            const apiKeyPlain = decrypt(ep.apiKeyEncrypted);
+            apiKeyMasked = maskApiKey(apiKeyPlain);
+            hasApiKey = true;
+          }
+        } catch {
+          hasApiKey = false;
+        }
+        return {
+          id: ep.id,
+          name: ep.name,
+          apiBaseUrl: ep.apiBaseUrl,
+          models: ep.models || [],
+          modelChatSupport: ep.modelChatSupport,
+          modelsLastFetched: ep.modelsLastFetched?.toISOString(),
+          enabled: ep.enabled,
+          apiKeyMasked,
+          hasApiKey,
+        };
+      });
+
+      // 兼容旧版：处理单 API Key
+      let apiKeyMasked = '';
+      let hasApiKey = false;
+      try {
+        if (updatedConfig.apiKeyEncrypted) {
+          const apiKeyPlain = decrypt(updatedConfig.apiKeyEncrypted);
+          apiKeyMasked = maskApiKey(apiKeyPlain);
+          hasApiKey = true;
+        }
+      } catch (err) {
+        console.error('[AdminConfigHandler] API Key 解密失败:', err instanceof Error ? err.message : 'unknown');
+        hasApiKey = false;
+      }
+
+      this.response.body = {
+        config: {
+          endpoints: endpointsWithMaskedKeys,
+          selectedModels: updatedConfig.selectedModels || [],
+          scenarioModels: updatedConfig.scenarioModels || {},
+          testdataRoleModels: updatedConfig.testdataRoleModels || {},
+          apiBaseUrl: updatedConfig.apiBaseUrl,
+          modelName: updatedConfig.modelName,
+          rateLimitPerMinute: updatedConfig.rateLimitPerMinute,
+          timeoutSeconds: updatedConfig.timeoutSeconds,
+          systemPromptTemplate: updatedConfig.systemPromptTemplate,
+          extraJailbreakPatternsText: updatedConfig.extraJailbreakPatternsText || '',
+          budgetConfig: updatedConfig.budgetConfig || {},
+          apiKeyMasked,
+          hasApiKey,
+          updatedAt: updatedConfig.updatedAt.toISOString()
+        },
+        builtinJailbreakPatterns: builtinJailbreakPatternSources,
+      };
+      this.response.type = 'application/json';
+    } catch (err) {
+      console.error('[AdminConfigHandler] 更新配置失败:', err instanceof Error ? err.message : 'unknown');
+      this.response.status = 500;
+      this.response.body = {
+        error: this.translate('ai_helper_config_update_failed'),
+        code: 'CONFIG_UPDATE_FAILED',
+      };
+      this.response.type = 'application/json';
+    }
+  }
+}
+
+/**
+ * JailbreakLogsHandler - 独立的越狱日志分页端点
+ * GET /ai-helper/admin/jailbreak-logs?page=1&limit=20
+ */
+export class JailbreakLogsHandler extends Handler {
+  async get() {
+    try {
+      const jailbreakLogModel: JailbreakLogModel = this.ctx.get('jailbreakLogModel');
+      const query = this.request.query || {};
+      const page = parseInt(String(query.page || '1'), 10) || 1;
+      const limit = parseInt(String(query.limit || '20'), 10) || 20;
+      const parsedFilters = parseJailbreakLogFilters(query);
+      if (!parsedFilters) {
+        this.response.status = 400;
+        this.response.body = {
+          error: this.translate('ai_helper_admin_jailbreak_filter_invalid'),
+          code: 'INVALID_JAILBREAK_LOG_FILTER',
+        };
+        this.response.type = 'application/json';
+        return;
+      }
+      const filters = parsedFilters;
+      const domainId = getDomainId(this);
+      const [logResult, summary, ruleMetrics, operationalMetrics] = await Promise.all([
+        jailbreakLogModel.listWithPagination(page, limit, domainId, filters),
+        jailbreakLogModel.getReviewSummary(domainId),
+        jailbreakLogModel.getRuleMetrics(domainId, 10),
+        jailbreakLogModel.getOperationalMetrics(domainId, 14),
+      ]);
+
+      this.response.body = {
+        logs: logResult.logs.map(formatJailbreakLog),
+        total: logResult.total,
+        page: logResult.page,
+        totalPages: logResult.totalPages,
+        summary,
+        ruleMetrics,
+        operationalMetrics,
+        filters,
+      };
+      this.response.type = 'application/json';
+    } catch (err) {
+      console.error('[AI Helper] JailbreakLogsHandler error:', err instanceof Error ? err.message : 'unknown');
+      this.response.status = 500;
+      this.response.body = { error: this.translate('ai_helper_config_jailbreak_logs_failed'), code: 'JAILBREAK_LOGS_FAILED' };
+      this.response.type = 'application/json';
+    }
+  }
+}
+
+/**
+ * JailbreakLogFilterOptionsHandler - 按输入片段返回当前域安全日志中的学生/题目候选项
+ * GET /ai-helper/admin/jailbreak-logs/filter-options?kind=user&q=42
+ */
+export class JailbreakLogFilterOptionsHandler extends Handler {
+  async get() {
+    try {
+      const query = this.request.query || {};
+      const kind = String(query.kind || '');
+      const partial = String(query.q || '').trim();
+      const requestedLimit = parseInt(String(query.limit || '10'), 10) || 10;
+      const limit = Math.min(20, Math.max(1, requestedLimit));
+      const invalidPartial = kind === 'user'
+        ? !/^\d{1,32}$/.test(partial)
+        : !partial || partial.length > 64;
+      if (!['user', 'problem'].includes(kind) || invalidPartial) {
+        this.response.status = 400;
+        this.response.body = {
+          error: this.translate('ai_helper_admin_jailbreak_filter_suggestions_invalid'),
+          code: 'INVALID_JAILBREAK_FILTER_SUGGESTION',
+        };
+        this.response.type = 'application/json';
+        return;
+      }
+      if (await applyRateLimit(this, {
+        op: 'ai_safety_filter_suggestions',
+        periodSecs: 60,
+        maxOps: 60,
+        failOpen: false,
+        errorMessage: 'ai_helper_admin_jailbreak_filter_suggestions_rate_limited',
+      })) return;
+
+      const domainId = getDomainId(this);
+      const jailbreakLogModel: JailbreakLogModel = this.ctx.get('jailbreakLogModel');
+      if (kind === 'user') {
+        const userIds = await jailbreakLogModel.suggestUserIds(domainId, partial, limit);
+        const users: UserDocument[] = userIds.length > 0
+          ? await this.ctx.db.collection('user').find(
+            { _id: { $in: userIds } },
+            { projection: { _id: 1, uname: 1 } }
+          ).toArray() as UserDocument[]
+          : [];
+        const nameById = new Map(users.map((user) => [user._id, user.uname || String(user._id)]));
+        this.response.body = {
+          kind,
+          options: userIds.map((id) => ({
+            value: String(id),
+            label: nameById.get(id) || String(id),
+          })),
+        };
+      } else {
+        const problemIds = await jailbreakLogModel.suggestProblemIds(domainId, partial, limit);
+        const numericIds = [
+          ...new Set(
+            problemIds
+              .map((problemId) => parseProblemId(problemId))
+              .filter((problemId): problemId is number => problemId !== null)
+          ),
+        ];
+        const problems: ProblemDocument[] = numericIds.length > 0
+          ? await this.ctx.db.collection('document').find(
+            { domainId, docType: 10, docId: { $in: numericIds } },
+            { projection: { docId: 1, title: 1 } }
+          ).toArray() as ProblemDocument[]
+          : [];
+        const titleById = new Map<number, string>(
+          problems.map((problem) => [problem.docId, problem.title || String(problem.docId)])
+        );
+        this.response.body = {
+          kind,
+          options: problemIds.map((id) => {
+            const numericId = parseProblemId(id);
+            return {
+              value: id,
+              label: numericId === null ? id : titleById.get(numericId) || id,
+            };
+          }),
+        };
+      }
+      this.response.type = 'application/json';
+    } catch (err) {
+      console.error(
+        '[AI Helper] JailbreakLogFilterOptionsHandler error:',
+        err instanceof Error ? err.message : 'unknown'
+      );
+      this.response.status = 500;
+      this.response.body = {
+        error: this.translate('ai_helper_admin_jailbreak_filter_suggestions_failed'),
+        code: 'JAILBREAK_FILTER_SUGGESTIONS_FAILED',
+      };
+      this.response.type = 'application/json';
+    }
+  }
+}
+
+/**
+ * JailbreakLogsExportHandler - 导出当前域内、按当前筛选条件命中的脱敏安全事件
+ * GET /ai-helper/admin/jailbreak-logs/export
+ */
+export class JailbreakLogsExportHandler extends Handler {
+  async get() {
+    try {
+      if (await applyRateLimit(this, {
+        op: 'ai_safety_log_export',
+        periodSecs: 60,
+        maxOps: 3,
+        failOpen: true,
+        errorMessage: 'ai_helper_export_rate_limited',
+      })) return;
+      const parsedFilters = parseJailbreakLogFilters(this.request.query || {});
+      if (!parsedFilters) {
+        this.response.status = 400;
+        this.response.body = {
+          error: this.translate('ai_helper_admin_jailbreak_filter_invalid'),
+          code: 'INVALID_JAILBREAK_LOG_FILTER',
+        };
+        this.response.type = 'application/json';
+        return;
+      }
+      const jailbreakLogModel: JailbreakLogModel = this.ctx.get('jailbreakLogModel');
+      const result = await jailbreakLogModel.listForExport(getDomainId(this), parsedFilters, 5000);
+      const filename = `ai-safety-events-${new Date().toISOString().slice(0, 10)}.csv`;
+      this.response.type = 'text/csv; charset=utf-8';
+      this.response.addHeader('Content-Disposition', `attachment; filename="${filename}"`);
+      this.response.addHeader('X-AI-Helper-Export-Total', String(result.total));
+      this.response.addHeader('X-AI-Helper-Export-Truncated', String(result.truncated));
+      this.response.body = serializeSafetyLogsCsv(result.logs, {
+        total: result.total,
+        truncated: result.truncated,
+      });
+    } catch (err) {
+      console.error('[AI Helper] JailbreakLogsExportHandler error:', err instanceof Error ? err.message : 'unknown');
+      this.response.status = 500;
+      this.response.body = {
+        error: this.translate('ai_helper_admin_jailbreak_export_failed'),
+        code: 'JAILBREAK_LOG_EXPORT_FAILED',
+      };
+      this.response.type = 'application/json';
+    }
+  }
+}
+
+/**
+ * JailbreakLogReviewHandler - 教师/管理员复核安全拦截记录
+ * POST /ai-helper/admin/jailbreak-logs/:id/review
+ */
+export class JailbreakLogReviewHandler extends Handler {
+  async post({ id }: { id: string }) {
+    try {
+      if (rejectIfCsrfInvalid(this)) return;
+      if (!ObjectId.isValid(id)) {
+        this.response.status = 400;
+        this.response.body = {
+          error: this.translate('ai_helper_admin_jailbreak_review_invalid_id'),
+          code: 'INVALID_JAILBREAK_LOG_ID',
+        };
+        this.response.type = 'application/json';
+        return;
+      }
+
+      const { reviewStatus } = (this.request.body || {}) as { reviewStatus?: string };
+      if (reviewStatus !== 'confirmed' && reviewStatus !== 'false_positive') {
+        this.response.status = 400;
+        this.response.body = {
+          error: this.translate('ai_helper_admin_jailbreak_review_invalid_status'),
+          code: 'INVALID_REVIEW_STATUS',
+        };
+        this.response.type = 'application/json';
+        return;
+      }
+
+      const jailbreakLogModel: JailbreakLogModel = this.ctx.get('jailbreakLogModel');
+      const updated = await jailbreakLogModel.review(
+        id,
+        getDomainId(this),
+        reviewStatus,
+        Number(this.user._id)
+      );
+      if (!updated) {
+        this.response.status = 404;
+        this.response.body = {
+          error: this.translate('ai_helper_admin_jailbreak_review_not_found'),
+          code: 'JAILBREAK_LOG_NOT_FOUND',
+        };
+        this.response.type = 'application/json';
+        return;
+      }
+
+      this.response.body = { success: true, reviewStatus };
+      this.response.type = 'application/json';
+    } catch (err) {
+      console.error('[AI Helper] JailbreakLogReviewHandler error:', err instanceof Error ? err.message : 'unknown');
+      this.response.status = 500;
+      this.response.body = {
+        error: this.translate('ai_helper_admin_jailbreak_review_failed'),
+        code: 'JAILBREAK_LOG_REVIEW_FAILED',
+      };
+      this.response.type = 'application/json';
+    }
+  }
+}
+
+/**
+ * JailbreakLogBulkReviewHandler - 批量复核当前域的安全拦截记录
+ * POST /ai-helper/admin/jailbreak-logs/bulk-review
+ */
+export class JailbreakLogBulkReviewHandler extends Handler {
+  async post() {
+    try {
+      if (rejectIfCsrfInvalid(this)) return;
+      const { ids, reviewStatus } = (this.request.body || {}) as {
+        ids?: unknown;
+        reviewStatus?: string;
+      };
+      if (!Array.isArray(ids) || ids.length === 0 || ids.length > 100
+          || ids.some((id) => typeof id !== 'string' || !ObjectId.isValid(id))) {
+        this.response.status = 400;
+        this.response.body = {
+          error: this.translate('ai_helper_admin_jailbreak_bulk_invalid_ids'),
+          code: 'INVALID_JAILBREAK_LOG_IDS',
+        };
+        this.response.type = 'application/json';
+        return;
+      }
+      if (reviewStatus !== 'confirmed' && reviewStatus !== 'false_positive') {
+        this.response.status = 400;
+        this.response.body = {
+          error: this.translate('ai_helper_admin_jailbreak_review_invalid_status'),
+          code: 'INVALID_REVIEW_STATUS',
+        };
+        this.response.type = 'application/json';
+        return;
+      }
+
+      const uniqueIds = [...new Set(ids as string[])];
+      const jailbreakLogModel: JailbreakLogModel = this.ctx.get('jailbreakLogModel');
+      const result = await jailbreakLogModel.reviewMany(
+        uniqueIds,
+        getDomainId(this),
+        reviewStatus,
+        Number(this.user._id)
+      );
+      this.response.body = { success: true, ...result, reviewStatus };
+      this.response.type = 'application/json';
+    } catch (err) {
+      console.error('[AI Helper] JailbreakLogBulkReviewHandler error:', err instanceof Error ? err.message : 'unknown');
+      this.response.status = 500;
+      this.response.body = {
+        error: this.translate('ai_helper_admin_jailbreak_bulk_failed'),
+        code: 'JAILBREAK_LOG_BULK_REVIEW_FAILED',
+      };
+      this.response.type = 'application/json';
+    }
+  }
+}
+
+// 导出路由权限配置（使用系统管理员权限）
+export const AdminConfigHandlerPriv = PRIV.PRIV_EDIT_SYSTEM;
+export const JailbreakLogsHandlerPriv = PRIV.PRIV_EDIT_SYSTEM;
+export const JailbreakLogFilterOptionsHandlerPriv = PRIV.PRIV_EDIT_SYSTEM;
+export const JailbreakLogsExportHandlerPriv = PRIV.PRIV_EDIT_SYSTEM;
+export const JailbreakLogReviewHandlerPriv = PRIV.PRIV_EDIT_SYSTEM;
+export const JailbreakLogBulkReviewHandlerPriv = PRIV.PRIV_EDIT_SYSTEM;
+
+function formatJailbreakLog(log: JailbreakLog) {
+  return {
+    id: log._id.toHexString(),
+    domainId: log.domainId,
+    userId: log.userId,
+    problemId: log.problemId,
+    conversationId: log.conversationId ? log.conversationId.toHexString() : undefined,
+    questionType: log.questionType,
+    matchedPattern: log.matchedPattern,
+    matchedText: log.matchedText,
+    category: log.category,
+    confidence: log.confidence,
+    riskScore: log.riskScore,
+    detectionSource: log.detectionSource,
+    actionTaken: log.actionTaken,
+    blockedUntil: log.blockedUntil?.toISOString(),
+    reviewStatus: log.reviewStatus || 'pending',
+    reviewedAt: log.reviewedAt?.toISOString(),
+    reviewedBy: log.reviewedBy,
+    studentAppealedAt: log.studentAppealedAt?.toISOString(),
+    studentAppealReason: log.studentAppealReason,
+    expiresAt: log.expiresAt?.toISOString(),
+    createdAt: log.createdAt.toISOString()
+  };
+}
+
+const VALID_REVIEW_STATUSES: SafetyReviewStatus[] = ['pending', 'confirmed', 'false_positive'];
+const VALID_CATEGORIES: SafetyViolationCategory[] = [
+  'answer_seeking',
+  'prompt_injection',
+  'prompt_exfiltration',
+  'obfuscated_injection',
+];
+const VALID_ACTIONS: SafetyAction[] = ['blocked', 'cooldown_60s', 'cooldown_5m'];
+const VALID_DETECTION_SOURCES: SafetyDetectionSource[] = [
+  'plain',
+  'compacted',
+  'base64',
+  'hex',
+  'conversation',
+  'custom',
+];
+
+function parseDateFilter(value: string, endOfDay: boolean): Date | undefined | null {
+  if (!value) return undefined;
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return null;
+  const suffix = endOfDay ? 'T23:59:59.999Z' : 'T00:00:00.000Z';
+  const parsed = new Date(`${value}${suffix}`);
+  return Number.isNaN(parsed.getTime()) || parsed.toISOString().slice(0, 10) !== value
+    ? null
+    : parsed;
+}
+
+function parseJailbreakLogFilters(query: Record<string, unknown>): JailbreakLogListFilters | null {
+  const reviewStatusRaw = String(query.reviewStatus || '').trim();
+  const categoryRaw = String(query.category || '').trim();
+  const appealedRaw = String(query.appealed || '').trim();
+  const userIdRaw = String(query.userId || '').trim();
+  const problemIdRaw = String(query.problemId || '').trim();
+  const actionRaw = String(query.actionTaken || '').trim();
+  const detectionSourceRaw = String(query.detectionSource || '').trim();
+  const dateFromRaw = String(query.dateFrom || '').trim();
+  const dateToRaw = String(query.dateTo || '').trim();
+  const createdFrom = parseDateFilter(dateFromRaw, false);
+  const createdTo = parseDateFilter(dateToRaw, true);
+  const userId = userIdRaw ? Number(userIdRaw) : undefined;
+
+  if ((reviewStatusRaw && !VALID_REVIEW_STATUSES.includes(reviewStatusRaw as SafetyReviewStatus))
+      || (categoryRaw && !VALID_CATEGORIES.includes(categoryRaw as SafetyViolationCategory))
+      || (appealedRaw && appealedRaw !== '1')
+      || (userIdRaw && (!Number.isSafeInteger(userId) || (userId as number) < 0))
+      || problemIdRaw.length > 128
+      || (actionRaw && !VALID_ACTIONS.includes(actionRaw as SafetyAction))
+      || (detectionSourceRaw && !VALID_DETECTION_SOURCES.includes(detectionSourceRaw as SafetyDetectionSource))
+      || createdFrom === null
+      || createdTo === null
+      || (createdFrom && createdTo && createdFrom > createdTo)) {
+    return null;
+  }
+
+  return {
+    ...(reviewStatusRaw ? { reviewStatus: reviewStatusRaw as SafetyReviewStatus } : {}),
+    ...(categoryRaw ? { category: categoryRaw as SafetyViolationCategory } : {}),
+    ...(appealedRaw === '1' ? { appealedOnly: true } : {}),
+    ...(userId !== undefined ? { userId } : {}),
+    ...(problemIdRaw ? { problemId: problemIdRaw } : {}),
+    ...(actionRaw ? { actionTaken: actionRaw as SafetyAction } : {}),
+    ...(detectionSourceRaw ? { detectionSource: detectionSourceRaw as SafetyDetectionSource } : {}),
+    ...(createdFrom ? { createdFrom } : {}),
+    ...(createdTo ? { createdTo } : {}),
+  };
+}
+
+function escapeCsvCell(value: unknown): string {
+  let text = value === undefined || value === null ? '' : String(value);
+  if (/^\s*[=+\-@]/u.test(text)) text = `'${text}`;
+  return `"${text.replace(/"/g, '""')}"`;
+}
+
+export function serializeSafetyLogsCsv(
+  logs: JailbreakLog[],
+  metadata: { total: number; truncated: boolean } = { total: logs.length, truncated: false }
+): string {
+  const columns: Array<{ header: string; value: (log: JailbreakLog) => unknown }> = [
+    { header: 'createdAt', value: (log) => log.createdAt.toISOString() },
+    { header: 'eventId', value: (log) => log._id.toHexString() },
+    { header: 'userId', value: (log) => log.userId },
+    { header: 'problemId', value: (log) => log.problemId },
+    { header: 'category', value: (log) => log.category },
+    { header: 'confidence', value: (log) => log.confidence },
+    { header: 'riskScore', value: (log) => log.riskScore },
+    { header: 'detectionSource', value: (log) => log.detectionSource },
+    { header: 'actionTaken', value: (log) => log.actionTaken },
+    { header: 'reviewStatus', value: (log) => log.reviewStatus || 'pending' },
+    { header: 'studentAppealedAt', value: (log) => log.studentAppealedAt?.toISOString() },
+    { header: 'reviewedAt', value: (log) => log.reviewedAt?.toISOString() },
+    { header: 'matchedPattern', value: (log) => log.matchedPattern },
+  ];
+  const metadataColumns = ['recordType', 'exportedCount', 'totalMatched', 'truncated'];
+  const rows = [
+    [...metadataColumns, ...columns.map((column) => column.header)].map(escapeCsvCell).join(','),
+    [
+      'metadata',
+      logs.length,
+      metadata.total,
+      metadata.truncated,
+      ...columns.map(() => ''),
+    ].map(escapeCsvCell).join(','),
+    ...logs.map((log) => [
+      'event', '', '', '', ...columns.map((column) => column.value(log)),
+    ].map(escapeCsvCell).join(',')),
+  ];
+  return `\uFEFF${rows.join('\r\n')}`;
+}

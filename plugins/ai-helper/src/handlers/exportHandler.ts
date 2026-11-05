@@ -1,0 +1,145 @@
+/**
+ * Export Handler - 数据导出 API Handler
+ *
+ * 处理教师/管理员导出会话数据的请求
+ * GET /ai-helper/export
+ */
+
+import { Handler, PRIV } from 'hydrooj';
+import { ExportService, ConversationExportFilters, ConversationExportOptions } from '../services/exportService';
+import { getDomainId } from '../utils/domainHelper';
+import { applyRateLimit } from '../lib/rateLimitHelper';
+import { translateWithParams } from '../utils/i18nHelper';
+
+/**
+ * ExportHandler - 导出会话数据为 CSV 文件
+ * GET /ai-helper/export?format=csv&startDate=...&endDate=...&classId=...&problemId=...&userId=...&includeSensitive=false
+ * GET /d/:domainId/ai-helper/export?format=csv&...
+ */
+export class ExportHandler extends Handler {
+  async get() {
+    try {
+      // 限流：5 次/60秒，fail-open（只读端点）
+      if (await applyRateLimit(this, {
+        op: 'ai_export', periodSecs: 60, maxOps: 5,
+        failOpen: true,
+        errorMessage: 'ai_helper_export_rate_limited',
+      })) return;
+
+      // 获取当前域 ID（用于域隔离）
+      const domainId = getDomainId(this);
+
+      // 1. 解析查询参数
+      const {
+        format = 'csv',
+        startDate,
+        endDate,
+        classId,
+        problemId,
+        userId,
+        includeSensitive = 'false',
+        includeMetrics = 'false',
+      } = this.request.query;
+
+      // 2. 验证导出格式(目前仅支持 CSV)
+      if (format !== 'csv') {
+        this.response.status = 400;
+        this.response.body = {
+          error: {
+            code: 'UNSUPPORTED_FORMAT',
+            message: this.translate('ai_helper_export_unsupported_format')
+          }
+        };
+        this.response.type = 'application/json';
+        return;
+      }
+
+      // 3. 构造筛选条件（始终包含 domainId 以实现域隔离）
+      const filters: ConversationExportFilters = {
+        domainId  // 域隔离：只导出当前域的数据
+      };
+
+      if (startDate) {
+        try {
+          filters.startDate = new Date(startDate as string);
+        } catch (err) {
+          this.response.status = 400;
+          this.response.body = {
+            error: {
+              code: 'INVALID_DATE',
+              message: translateWithParams(this, 'ai_helper_export_invalid_start_date', startDate as string)
+            }
+          };
+          this.response.type = 'application/json';
+          return;
+        }
+      }
+
+      if (endDate) {
+        try {
+          filters.endDate = new Date(endDate as string);
+        } catch (err) {
+          this.response.status = 400;
+          this.response.body = {
+            error: {
+              code: 'INVALID_DATE',
+              message: translateWithParams(this, 'ai_helper_export_invalid_end_date', endDate as string)
+            }
+          };
+          this.response.type = 'application/json';
+          return;
+        }
+      }
+
+      if (classId) {
+        filters.classId = String(classId);
+      }
+
+      if (problemId) {
+        filters.problemId = String(problemId);
+      }
+
+      if (userId) {
+        filters.userId = String(userId);
+      }
+
+      // 4. 构造导出选项
+      const options: ConversationExportOptions = {
+        includeSensitive: includeSensitive === 'true',
+        includeMetrics: includeMetrics === 'true',
+      };
+
+      // 5. 调用 ExportService 生成 CSV
+      const exportService = new ExportService(this.ctx);
+      const csv = await exportService.exportConversations(filters, options);
+
+      // 6. 生成文件名(带时间戳)
+      const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+      const filename = `ai_conversations_${timestamp}.csv`;
+
+      // 7. 设置响应头并返回 CSV 文件
+      this.response.status = 200;
+      this.response.type = 'text/csv';
+      this.response.addHeader('Content-Disposition', `attachment; filename="${filename}"`);
+      this.response.body = csv;
+
+    } catch (err) {
+      console.error('[ExportHandler] Export error:', err);
+      this.response.status = 500;
+      this.response.body = {
+        error: {
+          code: 'EXPORT_ERROR',
+          message: err instanceof Error ? err.message : this.translate('ai_helper_export_failed')
+        }
+      };
+      this.response.type = 'application/json';
+    }
+  }
+}
+
+/**
+ * 导出路由权限配置
+ * 使用 PRIV.PRIV_EDIT_SYSTEM (root-only 权限)
+ * 数据导出敏感,仅允许系统管理员访问
+ */
+export const ExportHandlerPriv = PRIV.PRIV_EDIT_SYSTEM;

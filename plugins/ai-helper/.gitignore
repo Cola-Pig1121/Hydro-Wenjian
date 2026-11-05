@@ -1,0 +1,55 @@
+# Ignore Claude/Specify/ChatGPT agent folders
+.claude/
+.specify/
+.chatgpt/
+.superpowers/
+CLAUDE.md
+
+# Test coverage
+coverage/
+
+
+# Ignore environment variable files
+.env
+.env.local
+
+# Dependencies
+node_modules/
+
+# Build outputs
+# dist/ 需要包含在 git 中，因为 npm 发布时需要编译后的代码
+# dist/
+frontend/dist/
+
+# Logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Python typical ignores (if using Python in plugin)
+__pycache__/
+*.pyc
+
+# Editor / OS junk
+.DS_Store
+.vscode/
+*.code-workspace
+
+# other
+PHASE2_DEPLOYMENT.md
+PHASE3_IMPLEMENTATION.md
+# Public documentation is explicitly allowlisted. Keep working notes outside this repository.
+/docs/*
+!/docs/README.md
+!/docs/testdata-large-inputs.md
+DEPLOYMENT.md
+hydro-ai-helper.code-workspace
+specs/
+QUICKSTART.md
+.ace-tool/
+
+# Wrangler local cache
+.wrangler/
+
+# LanceDB local vector store (generated runtime data)
+lancedb/

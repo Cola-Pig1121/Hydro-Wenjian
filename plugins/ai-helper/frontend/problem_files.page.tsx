@@ -1,0 +1,75 @@
+/**
+ * 题目文件页面集成（/p/:pid/files）
+ *
+ * 在题目文件管理页注入「AI 生成测试数据」面板。
+ * 权限由后端校验（题目编辑权限）；面板在无权限时自动隐藏。
+ */
+
+import React from 'react';
+import { renderComponent } from './utils/renderHelper';
+import { ErrorBoundary } from './components/ErrorBoundary';
+import { TestdataGenPanel } from './testdataGen/TestdataGenPanel';
+
+// 支持的题目文件页 URL 模式
+const PROBLEM_FILES_PATTERNS: RegExp[] = [
+  /^\/p\/([^/]+)\/files\/?$/, // 根域：/p/D3102/files
+  /^\/d\/[^/]+\/p\/([^/]+)\/files\/?$/, // 域下：/d/:domain/p/:pid/files
+];
+
+function extractProblemId(): string | null {
+  const pathname = window.location.pathname;
+  for (const pattern of PROBLEM_FILES_PATTERNS) {
+    const match = pathname.match(pattern);
+    if (match && match[1]) return decodeURIComponent(match[1]);
+  }
+  return null;
+}
+
+const CONTAINER_ID = 'ai-testdata-gen-root';
+
+/**
+ * 在 Hydro 的文件、附件与侧栏所在行下方独占一行，避免受第一列宽度限制。
+ * 保留原有列结构；自定义主题没有 .main 时退回到 main 元素或 body。
+ */
+function insertContainer(): HTMLDivElement | null {
+  if (document.getElementById(CONTAINER_ID)) return null;
+
+  const container = document.createElement('div');
+  container.id = CONTAINER_ID;
+
+  const row = document.createElement('div');
+  row.className = 'row ai-testdata-row';
+  row.style.clear = 'both';
+  container.className = 'columns';
+  container.style.width = '100%';
+  container.style.minWidth = '0';
+  row.appendChild(container);
+  const main = document.querySelector('.main, main') || document.body;
+  main.appendChild(row);
+  return container;
+}
+
+function initTestdataGen() {
+  const problemId = extractProblemId();
+  if (!problemId) return;
+
+  // 便于排查"面板不出现"：F12 控制台无此日志 = 前端 bundle 未包含本插件
+  // （UI 未重建或插件被回滚到旧版本）
+  console.debug(`[AI-Helper] testdata-gen panel init: problemId=${problemId}`);
+
+  const container = insertContainer();
+  if (!container) return;
+
+  renderComponent(
+    <ErrorBoundary>
+      <TestdataGenPanel problemId={problemId} />
+    </ErrorBoundary>,
+    container,
+  );
+}
+
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', initTestdataGen, { once: true });
+} else {
+  initTestdataGen();
+}

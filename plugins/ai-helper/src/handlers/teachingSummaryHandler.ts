@@ -1,0 +1,493 @@
+import { studentPatternGroups } from '../services/analyzers/temporalPatternAnalyzer';
+/**
+ * TeachingSummaryHandler - 教学总结 API 处理器
+ *
+ * 提供竞赛教学分析总结的生成、查询、列表和反馈功能
+ */
+
+import { Handler, PRIV, db } from 'hydrooj';
+import { ObjectId, ObjectIdType } from '../utils/mongo';
+import { getDomainId } from '../utils/domainHelper';
+import { AIServiceError, USER_ERROR_MESSAGE_KEYS, createMultiModelClientFromConfig, extractAiErrorMetadata } from '../services/openaiClient';
+import { TeachingSummaryModel } from '../models/teachingSummary';
+import { TeachingAnalysisService } from '../services/teachingAnalysisService';
+import { TeachingSuggestionService, BehaviorSummary } from '../services/teachingSuggestionService';
+import { isFillInBlankProblem, extractFillInTemplate } from '../services/analyzers/codeSelectionService';
+import { TelemetryService } from '../services/telemetryService';
+
+export const TeachingSummaryHandlerPriv = PRIV.PRIV_READ_RECORD_CODE;
+
+// ─── Helper: resolve contestId to ObjectId ───────────────────────────────────
+
+function parseContestId(raw: string): ObjectIdType | null {
+  try {
+    return new ObjectId(raw);
+  } catch {
+    return null;
+  }
+}
+
+// ─── TeachingSummaryHandler ───────────────────────────────────────────────────
+
+/**
+ * TeachingSummaryHandler - 获取或生成竞赛教学总结
+ * GET  /ai-helper/teaching-summary/:contestId  — 查询已有总结
+ * POST /ai-helper/teaching-summary/:contestId  — 触发生成
+ */
+export class TeachingSummaryHandler extends Handler {
+  async get() {
+    try {
+      const domainId = getDomainId(this);
+      const contestId = this.request.params.contestId as string;
+
+      const contestObjId = parseContestId(contestId);
+      if (!contestObjId) {
+        this.response.status = 400;
+        this.response.body = { error: { code: 'INVALID_CONTEST_ID', message: 'Invalid contestId format' } };
+        this.response.type = 'application/json';
+        return;
+      }
+
+      const model: TeachingSummaryModel = this.ctx.get('teachingSummaryModel');
+      const summary = await model.findByContest(domainId, contestObjId);
+
+      if (!summary) {
+        this.response.status = 404;
+        this.response.body = { error: { code: 'NOT_FOUND', message: 'Teaching summary not found' } };
+        this.response.type = 'application/json';
+        return;
+      }
+
+      this.response.body = { summary };
+      this.response.type = 'application/json';
+    } catch (err) {
+      console.error('[TeachingSummaryHandler.get] error:', err);
+      this.response.status = 500;
+      this.response.body = { error: { code: 'INTERNAL_ERROR', message: err instanceof Error ? err.message : 'Internal error' } };
+      this.response.type = 'application/json';
+    }
+  }
+
+  async post() {
+    try {
+      const domainId = getDomainId(this);
+      const contestId = this.request.params.contestId as string;
+      const { teachingFocus, regenerate } = this.request.body as {
+        teachingFocus?: string;
+        regenerate?: boolean;
+      };
+
+      const contestObjId = parseContestId(contestId);
+      if (!contestObjId) {
+        this.response.status = 400;
+        this.response.body = { error: { code: 'INVALID_CONTEST_ID', message: 'Invalid contestId format' } };
+        this.response.type = 'application/json';
+        return;
+      }
+
+      const model: TeachingSummaryModel = this.ctx.get('teachingSummaryModel');
+
+      // Check for existing summary
+      const existing = await model.findByContest(domainId, contestObjId);
+      if (existing && !regenerate) {
+        this.response.body = { summary: existing, exists: true };
+        this.response.type = 'application/json';
+        return;
+      }
+
+      // Delete old summary if regenerating
+      if (existing && regenerate) {
+        await model.deleteById(existing._id);
+      }
+
+      // Fetch contest document
+      const documentColl = db.collection('document');
+      const tdoc = await documentColl.findOne({ domainId, docType: 30, docId: contestObjId });
+      if (!tdoc) {
+        this.response.status = 404;
+        this.response.body = { error: { code: 'CONTEST_NOT_FOUND', message: 'Contest not found' } };
+        this.response.type = 'application/json';
+        return;
+      }
+
+      // Get attendees
+      const statusColl = db.collection('document.status');
+      const tsdocs = await statusColl
+        .find({ domainId, docType: 30, docId: contestObjId }, { projection: { uid: 1 } })
+        .toArray();
+      const studentUids: number[] = tsdocs.map((s: { uid?: unknown }) => Number(s.uid)).filter((uid: number) => uid > 0);
+
+      if (studentUids.length === 0) {
+        this.response.status = 400;
+        this.response.body = { error: { code: 'NO_STUDENTS', message: 'No students found for this contest' } };
+        this.response.type = 'application/json';
+        return;
+      }
+
+      // Create summary record
+      const summaryId = await model.create({
+        domainId,
+        contestId: contestObjId,
+        contestTitle: String(tdoc.title || contestId),
+        contestContent: String(tdoc.content || ''),
+        teachingFocus,
+        createdBy: this.user._id,
+        dataSnapshotAt: new Date(),
+      });
+
+      const newSummary = await model.findById(summaryId);
+
+      // Fire-and-forget async generation
+      this.generateAsync(
+        model,
+        domainId,
+        summaryId,
+        contestObjId,
+        tdoc,
+        studentUids,
+        teachingFocus,
+      ).catch((err) => {
+        console.error('[TeachingSummaryHandler] generateAsync unhandled error:', err);
+      });
+
+      this.response.body = { summary: newSummary, started: true };
+      this.response.type = 'application/json';
+    } catch (err) {
+      console.error('[TeachingSummaryHandler.post] error:', err);
+      this.response.status = 500;
+      this.response.body = { error: { code: 'INTERNAL_ERROR', message: USER_ERROR_MESSAGE_KEYS[err instanceof AIServiceError ? err.category : 'unknown'] } };
+      this.response.type = 'application/json';
+    }
+  }
+
+  /**
+   * 解析发现项涉及的学生 uid → 用户名映射（best-effort，失败不阻塞生成）
+   */
+  private async resolveStudentNames(
+    findings: Array<{ evidence: { affectedStudents: number[] } }>,
+  ): Promise<Record<string, string>> {
+    const names: Record<string, string> = {};
+    try {
+      const uids = new Set<number>();
+      for (const f of findings) {
+        for (const uid of f.evidence.affectedStudents) uids.add(uid);
+      }
+      if (uids.size === 0) return names;
+
+      const userDocs = await this.ctx.db.collection('user')
+        .find({ _id: { $in: Array.from(uids) } }, { projection: { _id: 1, uname: 1 } })
+        .toArray() as unknown as Array<{ _id: unknown; uname?: string }>;
+      for (const u of userDocs) {
+        names[String(u._id)] = u.uname || `User #${u._id}`;
+      }
+    } catch (err) {
+      console.error('[TeachingSummaryHandler] resolveStudentNames failed:', err);
+    }
+    return names;
+  }
+
+  private async generateAsync(
+    model: TeachingSummaryModel,
+    domainId: string,
+    summaryId: ObjectIdType,
+    contestObjId: ObjectIdType,
+    tdoc: { pids?: unknown[]; title?: unknown; content?: unknown; beginAt?: unknown; endAt?: unknown },
+    studentUids: number[],
+    teachingFocus?: string,
+  ): Promise<void> {
+    const startTime = Date.now();
+    const dataSnapshotAt = new Date(Math.floor(startTime / 1000) * 1000);
+    this.ctx.get('featureStatsModel')?.recordAttempt('teaching_summary').catch(() => { /* best-effort */ });
+
+    try {
+      await model.updateStatus(summaryId, 'generating');
+      await model.updateProgress(summaryId, 'collecting_data');
+
+      // Build pid list from contest
+      const pids: number[] = ((tdoc.pids || []) as unknown[])
+        .map((p: unknown) => parseInt(String(p).replace(/^P/i, ''), 10))
+        .filter((n: number) => !isNaN(n));
+
+      // Fetch problem docs early — needed for both analyzer titles and LLM context
+      const documentColl = db.collection('document');
+      const problemDocs = await documentColl
+        .find({ domainId, docType: 10, docId: { $in: pids } })
+        .toArray();
+
+      const pidTitles = new Map<number, string>();
+      const pidAliases = new Map<number, string[]>();
+      const problemContexts = problemDocs.map((doc: { docId: number; title?: unknown; content?: unknown }) => {
+        const pid = doc.docId as number;
+        const title = (doc.title || String(doc.docId)) as string;
+        pidTitles.set(pid, title);
+        const alias = (doc as { pid?: unknown }).pid;
+        if (typeof alias === 'string' && alias) pidAliases.set(pid, [alias]);
+        return { pid, title, content: (doc.content || '') as string };
+      });
+
+      // Layer 1: Analysis (with problem titles for human-readable findings)
+      await model.updateProgress(summaryId, 'analyzing');
+      const analysisService = new TeachingAnalysisService(this.ctx.db);
+      const analysisResult = await analysisService.analyze({
+        domainId,
+        contestId: contestObjId,
+        pids,
+        studentUids,
+        pidTitles,
+        pidAliases,
+        dataSnapshotAt,
+        contestStartTime: tdoc.beginAt ? new Date(tdoc.beginAt as string) : undefined,
+        contestEndTime: tdoc.endAt ? new Date(tdoc.endAt as string) : undefined,
+      });
+
+      // Prepare fill-in candidates with problem content for template detection
+      const fillInCandidatesForPrompt = analysisResult.fillInCandidates.map(c => {
+        const problemDoc = problemDocs.find((d: { docId: number }) => d.docId === c.pid);
+        const problemContent = (problemDoc?.content || '') as string;
+        return {
+          pid: c.pid,
+          title: c.title,
+          lang: c.lang,
+          code: c.code,
+          isFillInProblem: isFillInBlankProblem(problemContent),
+          sourceTemplate: extractFillInTemplate(problemContent),
+        };
+      }).filter(c => !c.isFillInProblem || c.sourceTemplate !== undefined);
+
+      // Aggregate temporal profiles into behavior summary (count-only) for LLM
+      const behaviorCounts: Record<string, Set<number>> = {};
+      for (const [uid, pattern] of studentPatternGroups(analysisResult.temporalProfiles || [])) {
+        if (!behaviorCounts[pattern]) {
+          behaviorCounts[pattern] = new Set();
+        }
+        behaviorCounts[pattern].add(uid);
+      }
+      const counts: BehaviorSummary = {
+        persistent_learner: behaviorCounts['persistent_learner']?.size ?? 0,
+        burst_then_quit: behaviorCounts['burst_then_quit']?.size ?? 0,
+        stuck_silent: behaviorCounts['stuck_silent']?.size ?? 0,
+        disengaged: behaviorCounts['disengaged']?.size ?? 0,
+      };
+      const totalBehavior = counts.persistent_learner + counts.burst_then_quit
+        + counts.stuck_silent + counts.disengaged;
+      const behaviorSummary: BehaviorSummary | undefined = totalBehavior > 0
+        ? counts : undefined;
+
+      // Layer 2: AI suggestions (analysis report + fill-in exercises in parallel)
+      await model.updateProgress(summaryId, 'generating_suggestion');
+      // Use the multi-endpoint client (same source as chat & batch summary) so
+      // teaching analysis reads config.endpoints[]. The legacy single-client path
+      // validated only top-level apiBaseUrl/modelName/apiKeyEncrypted, which are
+      // empty under the v2 multi-endpoint config — causing "AI 服务配置不完整"
+      // even when chat worked. MultiModelClient also falls back to legacy fields.
+      const aiClient = await createMultiModelClientFromConfig(this.ctx, undefined, 'teachingAnalysis');
+      const suggestionService = new TeachingSuggestionService(aiClient);
+
+      // Extract related findings for fill-in candidates
+      const fillInRelatedFindings = fillInCandidatesForPrompt.length > 0
+        ? analysisResult.findings
+            .filter(f => f.evidence.affectedProblems.some(
+              pid => fillInCandidatesForPrompt.some(c => c.pid === pid),
+            ))
+            .map(f => ({
+              title: f.title,
+              errorSignature: f.errorSignature,
+              affectedCount: f.evidence.affectedStudents.length,
+            }))
+        : [];
+
+      const [overallResult, fillInResult] = await Promise.all([
+        suggestionService.generateOverallSuggestion({
+          contestTitle: String(tdoc.title || ''),
+          contestContent: String(tdoc.content || ''),
+          teachingFocus,
+          stats: analysisResult.stats,
+          findings: analysisResult.findings,
+          problemContexts,
+          behaviorSummary,
+        }),
+        fillInCandidatesForPrompt.length > 0
+          ? suggestionService.generateFillInExercise({
+              candidates: fillInCandidatesForPrompt,
+              relatedFindings: fillInRelatedFindings,
+            })
+          : Promise.resolve(null),
+      ]);
+
+      let totalPromptTokens = overallResult.tokenUsage.promptTokens
+        + (fillInResult?.tokenUsage.promptTokens ?? 0);
+      let totalCompletionTokens = overallResult.tokenUsage.completionTokens
+        + (fillInResult?.tokenUsage.completionTokens ?? 0);
+
+      // Deep dives only for primary findings — secondary ones are shown as
+      // one-liners in the UI and don't warrant an extra LLM call each
+      const deepDiveResults: Record<string, string> = {};
+      const problemDocMap = new Map(problemDocs.map((doc: { docId: number; title?: unknown; content?: unknown }) => [doc.docId, doc]));
+
+      const deepDiveFindings = analysisResult.findings.filter(f => f.needsDeepDive && !f.isSecondary);
+
+      // Samples already belong to the analyzer's exact evidence records.
+      // Never replace them with an unscoped student/problem code lookup.
+      if (deepDiveFindings.length > 0) {
+        await model.updateProgress(summaryId, 'deep_diving');
+      }
+
+      for (const finding of deepDiveFindings) {
+        const problemContent = finding.evidence.affectedProblems
+          .map(pid => {
+            const doc = problemDocMap.get(pid);
+            return doc ? `### ${doc.title || doc.docId}\n${doc.content || ''}` : '';
+          })
+          .filter(Boolean)
+          .join('\n\n');
+
+        const deepDiveResult = await suggestionService.generateDeepDive(finding, problemContent);
+        deepDiveResults[finding.id] = deepDiveResult.text;
+        totalPromptTokens += deepDiveResult.tokenUsage.promptTokens;
+        totalCompletionTokens += deepDiveResult.tokenUsage.completionTokens;
+      }
+
+      // Resolve student names referenced by findings so the UI can show
+      // actionable name lists instead of opaque uid counts
+      const studentNames = await this.resolveStudentNames(analysisResult.findings);
+
+      // Save completed results — homework is stored separately from the main
+      // suggestion so the UI can surface it as a first-class deliverable
+      await model.updateProgress(summaryId, 'saving');
+      await model.saveResults(summaryId, {
+        dataSnapshotAt,
+        stats: analysisResult.stats,
+        findings: analysisResult.findings,
+        overallSuggestion: overallResult.text,
+        homeworkText: fillInResult?.text ?? '',
+        studentNames,
+        deepDiveResults,
+        tokenUsage: { promptTokens: totalPromptTokens, completionTokens: totalCompletionTokens },
+        generationTimeMs: Date.now() - startTime,
+      });
+
+      this.ctx.get('featureStatsModel')?.recordSuccess('teaching_summary').catch(() => { /* best-effort */ });
+      console.log('[TeachingSummaryHandler] generateAsync completed for summaryId=%s', summaryId);
+    } catch (err) {
+      console.error('[TeachingSummaryHandler] generateAsync failed for summaryId=%s:', summaryId, err);
+      this.ctx.get('errorReporter')?.capture(
+        'background_job', 'teaching_summary',
+        err instanceof Error ? err.message : String(err),
+        undefined,
+        err instanceof Error ? err.stack : undefined,
+        { summaryId: String(summaryId), domainId, ...extractAiErrorMetadata(err) },
+      );
+      try {
+        await model.updateStatus(summaryId, 'failed',
+          USER_ERROR_MESSAGE_KEYS[err instanceof AIServiceError ? err.category : 'unknown']);
+      } catch (updateErr) {
+        console.error('[TeachingSummaryHandler] Failed to set status=failed:', updateErr);
+      }
+    }
+  }
+}
+
+// ─── TeachingReviewHandler ────────────────────────────────────────────────────
+
+/**
+ * TeachingReviewHandler - 分页查看域内所有教学总结
+ * GET /ai-helper/teaching-review
+ */
+export class TeachingReviewHandler extends Handler {
+  async get() {
+    try {
+      const domainId = getDomainId(this);
+      const rawPage = this.request.query?.page;
+      const rawLimit = this.request.query?.limit;
+
+      const page = Math.max(1, parseInt(String(rawPage || '1'), 10));
+      const limit = Math.min(50, Math.max(1, parseInt(String(rawLimit || '20'), 10)));
+
+      const model: TeachingSummaryModel = this.ctx.get('teachingSummaryModel');
+      const [summaries, total, feedbackStats] = await Promise.all([
+        model.findByDomain(domainId, page, limit),
+        model.countByDomain(domainId),
+        model.getFeedbackStats(domainId),
+      ]);
+
+      // Summary documents predate route metadata. Resolve the current HydroOJ
+      // rule in one query so review links can choose /contest or /homework.
+      const contestIds = summaries.map(summary => summary.contestId);
+      const contestDocs = contestIds.length > 0
+        ? await db.collection('document').find(
+          { domainId, docType: 30, docId: { $in: contestIds } },
+          { projection: { docId: 1, rule: 1 } },
+        ).toArray()
+        : [];
+      const contestRuleById = new Map<string, string>(
+        contestDocs.map(doc => [String(doc.docId), String(doc.rule || '')]),
+      );
+      const enrichedSummaries = summaries.map(summary => ({
+        ...summary,
+        contestRule: contestRuleById.get(String(summary.contestId)) || '',
+      }));
+
+      this.response.body = { summaries: enrichedSummaries, total, page, limit, feedbackStats };
+      this.response.type = 'application/json';
+    } catch (err) {
+      console.error('[TeachingReviewHandler.get] error:', err);
+      this.response.status = 500;
+      this.response.body = { error: { code: 'INTERNAL_ERROR', message: err instanceof Error ? err.message : 'Internal error' } };
+      this.response.type = 'application/json';
+    }
+  }
+}
+
+// ─── TeachingSummaryFeedbackHandler ──────────────────────────────────────────
+
+/**
+ * TeachingSummaryFeedbackHandler - 提交对教学总结的反馈
+ * POST /ai-helper/teaching-summary/:summaryId/feedback
+ */
+export class TeachingSummaryFeedbackHandler extends Handler {
+  async post() {
+    try {
+      const summaryId = this.request.params.summaryId as string;
+      const { rating, comment } = this.request.body as {
+        rating?: string;
+        comment?: string;
+      };
+
+      if (rating !== 'up' && rating !== 'down') {
+        this.response.status = 400;
+        this.response.body = { error: { code: 'INVALID_RATING', message: "rating must be 'up' or 'down'" } };
+        this.response.type = 'application/json';
+        return;
+      }
+
+      const model: TeachingSummaryModel = this.ctx.get('teachingSummaryModel');
+      const existing = await model.findById(summaryId);
+      if (!existing) {
+        this.response.status = 404;
+        this.response.body = { error: { code: 'NOT_FOUND', message: 'Teaching summary not found' } };
+        this.response.type = 'application/json';
+        return;
+      }
+
+      await model.saveFeedback(existing._id, rating, comment);
+
+      // Report to telemetry (fire-and-forget)
+      try {
+        const telemetryService: TelemetryService = this.ctx.get('telemetryService');
+        telemetryService.reportFeedback({
+          type: 'other',
+          subject: `teaching_summary_${rating}`,
+          body: comment || '',
+        }).catch(() => { /* ignore telemetry errors */ });
+      } catch { /* telemetryService may not be available */ }
+
+      this.response.body = { ok: true };
+      this.response.type = 'application/json';
+    } catch (err) {
+      console.error('[TeachingSummaryFeedbackHandler.post] error:', err);
+      this.response.status = 500;
+      this.response.body = { error: { code: 'INTERNAL_ERROR', message: err instanceof Error ? err.message : 'Internal error' } };
+      this.response.type = 'application/json';
+    }
+  }
+}

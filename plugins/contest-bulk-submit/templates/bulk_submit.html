@@ -1,0 +1,53 @@
+{% extends "layout/basic.html" %}
+
+{% block content %}
+<div class="row">
+  <div class="columns">
+    <div class="column medium-9">
+      <div class="section">
+        <div class="section__header">
+          <h1 class="section__title">{{ _('Bulk Submit') }} - {{ tdoc.title }}</h1>
+        </div>
+        <div class="section__body">
+          <p>{{ _('Two layouts are supported: 1) <uname>/<Label>.<ext> folders for per-player submission; 2) flat Label.ext files assigned to the user below (or you).') }}</p>
+          <table class="table" style="margin-bottom: 1rem">
+            <thead>
+              <tr>
+                <th>{{ _('Label') }}</th>
+                <th>{{ _('Problem') }}</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for p in problems %}
+              <tr>
+                <td><b>{{ p.label }}</b></td>
+                <td>{{ p.title }}</td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+          <form id="bulk-submit-form" enctype="multipart/form-data">
+            <div class="form__item">
+              <label class="form__label">{{ _('Select Zip') }}
+                <input type="file" name="file" accept=".zip" required />
+              </label>
+            </div>
+            <div class="form__item">
+              <label class="form__label">{{ _('Default assign to (optional)') }}
+                <input type="text" name="defaultUser" class="rounded textbox" placeholder="{{ UserContext.uname }}" />
+              </label>
+            </div>
+            <div class="form__item">
+              <label class="form__label">
+                <input type="checkbox" name="dryrun" value="true" /> {{ _('Dry Run') }}
+              </label>
+            </div>
+            <button type="submit" class="button primary">{{ _('Submit') }}</button>
+          </form>
+          <div id="bulk-submit-result" style="margin-top: 1rem"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}

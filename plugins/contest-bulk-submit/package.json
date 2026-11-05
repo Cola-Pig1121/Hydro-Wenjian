@@ -1,0 +1,10 @@
+{
+    "name": "@hydrooj/contest-bulk-submit",
+    "version": "0.1.0",
+    "description": "离线比赛收集选手代码后打包上传系统统一评测",
+    "license": "AGPL-3.0-or-later",
+    "repository": {
+        "type": "git",
+        "url": "https://github.com/hydro-dev/Hydro"
+    }
+}

@@ -1,0 +1,247 @@
+/**
+ * useTeachingSummary — React hook for teaching summary API interactions.
+ * Handles fetch, generate (with polling), and feedback submission.
+ */
+
+import { useState, useCallback, useRef, useEffect } from 'react';
+import type { TeachingFinding as ServerFinding } from '../../src/models/teachingSummary';
+
+// ─── Interfaces ───────────────────────────────────────────────────────────────
+
+export interface TeachingFinding {
+  id: string;
+  dimension: string;
+  severity: 'high' | 'medium' | 'low';
+  title: string;
+  evidence: ServerFinding['evidence'];
+  needsDeepDive: boolean;
+  aiSuggestion?: string;
+  aiAnalysis?: string;
+  confidence?: 'high' | 'low' | 'insufficient_data';
+  /** 错误签名（合并自错误聚类维度） */
+  errorSignature?: string;
+  errorStatus?: number;
+  /** 折叠进本发现的关联洞察，展开时展示 */
+  supplements?: string[];
+  /** 次要发现：不单独成卡片，在"其他观察"中一行带过 */
+  isSecondary?: boolean;
+}
+
+export interface TeachingSummary {
+  _id: string;
+  domainId: string;
+  contestId: string;
+  contestTitle: string;
+  contestContent: string;
+  /** HydroOJ contest rule, used by the review page to select contest/homework routes. */
+  contestRule?: string;
+  teachingFocus?: string;
+  createdBy: number;
+  createdAt: string;
+  dataSnapshotAt: string;
+  status: 'pending' | 'generating' | 'completed' | 'failed';
+  errorMessageKey?: string;
+  progressPhase?: 'collecting_data' | 'analyzing' | 'generating_suggestion' | 'deep_diving' | 'saving';
+  stats: {
+    totalStudents: number;
+    participatedStudents: number;
+    aiUserCount: number;
+    problemCount: number;
+  };
+  findings: TeachingFinding[];
+  overallSuggestion: string;
+  /** 课后强化训练（挖空作业）markdown；旧文档无此字段（作业拼在 overallSuggestion 末尾） */
+  homeworkText?: string;
+  /** 发现项涉及的学生 uid -> 用户名 */
+  studentNames?: Record<string, string>;
+  deepDiveResults: Record<string, string>;
+  feedback?: { rating: 'up' | 'down'; comment?: string };
+  tokenUsage: { promptTokens: number; completionTokens: number };
+  generationTimeMs: number;
+}
+
+// ─── URL builders ─────────────────────────────────────────────────────────────
+
+export function buildUrl(domainId: string, path: string): string {
+  return domainId !== 'system'
+    ? `/d/${domainId}/ai-helper/teaching-summary${path}`
+    : `/ai-helper/teaching-summary${path}`;
+}
+
+export function buildReviewUrl(domainId: string): string {
+  return domainId !== 'system'
+    ? `/d/${domainId}/ai-helper/teaching-review`
+    : `/ai-helper/teaching-review`;
+}
+
+// ─── Hook ─────────────────────────────────────────────────────────────────────
+
+export interface UseTeachingSummaryReturn {
+  summary: TeachingSummary | null;
+  loading: boolean;
+  error: string | null;
+  fetchSummary: () => Promise<void>;
+  generate: (teachingFocus?: string, regenerate?: boolean) => Promise<void>;
+  submitFeedback: (summaryId: string, rating: 'up' | 'down', comment?: string) => Promise<void>;
+}
+
+const POLL_INTERVAL_MS = 5000;
+
+export function useTeachingSummary(domainId: string, contestId: string): UseTeachingSummaryReturn {
+  const [summary, setSummary] = useState<TeachingSummary | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const pollTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  const stopPolling = useCallback(() => {
+    if (pollTimerRef.current !== null) {
+      clearInterval(pollTimerRef.current);
+      pollTimerRef.current = null;
+    }
+  }, []);
+
+  // Cleanup on unmount
+  useEffect(() => {
+    return () => {
+      stopPolling();
+    };
+  }, [stopPolling]);
+
+  // startPolling must be declared before fetchSummary to avoid TDZ
+  // (fetchSummary's dependency array evaluates startPolling immediately)
+  const startPolling = useCallback(() => {
+    stopPolling();
+    pollTimerRef.current = setInterval(async () => {
+      try {
+        const url = buildUrl(domainId, `/${contestId}`);
+        const res = await fetch(url, {
+          credentials: 'include',
+          headers: { 'X-Requested-With': 'XMLHttpRequest' },
+        });
+        if (!res.ok) return;
+        const data = await res.json();
+        const fetched: TeachingSummary | null = data.summary ?? null;
+        if (fetched) {
+          setSummary(fetched);
+          if (fetched.status === 'completed' || fetched.status === 'failed') {
+            stopPolling();
+          }
+        }
+      } catch {
+        // ignore transient poll errors
+      }
+    }, POLL_INTERVAL_MS);
+  }, [domainId, contestId, stopPolling]);
+
+  const fetchSummary = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const url = buildUrl(domainId, `/${contestId}`);
+      const res = await fetch(url, {
+        credentials: 'include',
+        headers: { 'X-Requested-With': 'XMLHttpRequest' },
+      });
+      if (res.status === 404) {
+        setSummary(null);
+        setLoading(false);
+        return;
+      }
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        const msg = extractErrorMsg(data, `HTTP ${res.status}`);
+        setError(msg);
+        setLoading(false);
+        return;
+      }
+      const data = await res.json();
+      const fetched: TeachingSummary | null = data.summary ?? null;
+      setSummary(fetched);
+
+      // Auto-start polling if generation is in progress (e.g. after page refresh)
+      if (fetched && (fetched.status === 'pending' || fetched.status === 'generating')) {
+        startPolling();
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Unknown error');
+    } finally {
+      setLoading(false);
+    }
+  }, [domainId, contestId, startPolling]);
+
+  const generate = useCallback(async (teachingFocus?: string, regenerate?: boolean) => {
+    setLoading(true);
+    setError(null);
+    try {
+      const url = buildUrl(domainId, `/${contestId}`);
+      const res = await fetch(url, {
+        method: 'POST',
+        credentials: 'include',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Requested-With': 'XMLHttpRequest',
+        },
+        body: JSON.stringify({ teachingFocus, regenerate }),
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        const msg = extractErrorMsg(data, `HTTP ${res.status}`);
+        setError(msg);
+        setLoading(false);
+        return;
+      }
+      const data = await res.json();
+      const newSummary: TeachingSummary | null = data.summary ?? null;
+      setSummary(newSummary);
+
+      // If generation started, begin polling
+      if (data.started && newSummary) {
+        startPolling();
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Unknown error');
+    } finally {
+      setLoading(false);
+    }
+  }, [domainId, contestId, startPolling]);
+
+  const submitFeedback = useCallback(async (
+    summaryId: string,
+    rating: 'up' | 'down',
+    comment?: string,
+  ) => {
+    try {
+      const url = buildUrl(domainId, `/${summaryId}/feedback`);
+      const res = await fetch(url, {
+        method: 'POST',
+        credentials: 'include',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Requested-With': 'XMLHttpRequest',
+        },
+        body: JSON.stringify({ rating, comment }),
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        const msg = extractErrorMsg(data, `HTTP ${res.status}`);
+        setError(msg);
+        return;
+      }
+      // Update local feedback state
+      setSummary(prev => prev ? { ...prev, feedback: { rating, comment } } : prev);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Unknown error');
+    }
+  }, [domainId]);
+
+  return { summary, loading, error, fetchSummary, generate, submitFeedback };
+}
+
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+
+function extractErrorMsg(data: any, fallback: string): string {
+  const err = data?.error;
+  if (typeof err === 'string') return err;
+  if (err && typeof err.message === 'string') return err.message;
+  return fallback;
+}
