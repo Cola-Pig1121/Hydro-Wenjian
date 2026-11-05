@@ -167,7 +167,8 @@ export async function apply(ctx: Context, config: ResolvedConfig) {
             }
           } catch (err: any) {
             item.status = 'failed';
-            item.error = err?.message || String(err);
+            // Hydro error classes keep human text in params; err.message is the class name.
+            item.error = err?.params?.[0] || err?.message || String(err);
           }
           results.push(item);
         }
