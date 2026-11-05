@@ -1492,3 +1492,4 @@ ai_helper_kb_test_placeholder: "Ask a student-style question to preview the inje
 ai_helper_kb_run: "Test"
 ai_helper_kb_confirm_delete: "Delete this entry?"
 ai_helper_kb_error_load: "Failed to load knowledge config: "
+ai_helper_kb_tags: "Tags"

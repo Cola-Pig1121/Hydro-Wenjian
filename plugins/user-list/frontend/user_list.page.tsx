@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
-import ReactDOM from 'react-dom/client';
-import { i18n, Notification, request } from '@hydrooj/ui-default';
-import { NamedPage } from 'vj/misc/Page';
+import {
+    confirm, i18n, NamedPage, Notification, prompt, ReactDOM, request,
+} from '@hydrooj/ui-default';
 
 interface ListUser {
   _id: number;
@@ -11,8 +11,8 @@ interface ListUser {
   privFlags: string[];
   school?: string;
   mphone?: string;
+  bio?: string;
   banReason?: string;
-  nSubmit?: number;
 }
 
 interface DomainInfo {
@@ -27,7 +27,7 @@ function api(operation: string, payload: Record<string, any> = {}) {
   return request.post('', { operation, ...payload });
 }
 
-const PRIV_GROUPS: [string, string][] = [
+const PRIV_FLAGS: [string, string][] = [
   ['PRIV_USER_PROFILE', 'Registered user'],
   ['PRIV_REGISTER_USER', 'Register users'],
   ['PRIV_EDIT_SYSTEM', 'Edit system (root)'],
@@ -51,7 +51,7 @@ const PRIV_GROUPS: [string, string][] = [
   ['PRIV_MOD_BADGE', 'Moderator badge'],
 ];
 
-function UserDetail({ uid, onClose, onChanged }: { uid: number, onClose: () => void, onChanged: () => void }) {
+function UserDetail({ uid, onBack }: { uid: number, onBack: () => void }) {
   const [user, setUser] = useState<any>(null);
   const [domains, setDomains] = useState<DomainInfo[]>([]);
   const [error, setError] = useState('');
@@ -68,151 +68,141 @@ function UserDetail({ uid, onClose, onChanged }: { uid: number, onClose: () => v
 
   useEffect(() => { reload(); }, []);
 
-  const guard = async (fn: () => Promise<any>, msg: string) => {
+  const guard = async (fn: () => Promise<any>) => {
     try {
       await fn();
-      Notification.success(msg);
+      Notification.success(i18n('Saved'));
       reload();
-      onChanged();
     } catch (e: any) {
       Notification.error(e.message);
     }
   };
 
   if (!user) return <p>{error || i18n('Loading...')}</p>;
+
+  const editInfo = async () => {
+    const res = await prompt(i18n('Edit User'), {
+      uname: { type: 'text', label: i18n('Name'), default: user.uname },
+      mail: { type: 'text', label: i18n('Email'), default: user.mail || '' },
+      school: { type: 'text', label: i18n('School'), default: user.school || '' },
+      mphone: { type: 'text', label: 'mPhone', default: user.mphone || '' },
+      bio: { type: 'textarea', label: i18n('Bio'), default: user.bio || '', rows: 3, columns: -12 },
+    });
+    if (!res) return;
+    guard(() => api('updateInfo', { uid, ...res }));
+  };
+
+  const resetPassword = async () => {
+    const res = await prompt(i18n('Reset Password'), {
+      password: { type: 'text', label: `${i18n('Reset Password')} (${i18n('leave blank for random')})`, default: '' },
+    });
+    if (!res) return;
+    try {
+      const out = await api('resetPassword', { uid, password: res.password || undefined });
+      await prompt(i18n('New password'), { password: { type: 'text', default: out.password, label: i18n('New password:') } });
+    } catch (e: any) {
+      Notification.error(e.message);
+    }
+  };
+
+  const ban = async () => {
+    const res = await prompt(i18n('Ban'), { reason: { type: 'text', label: i18n('Ban reason'), default: '' } });
+    if (!res) return;
+    guard(() => api('ban', { uid, reason: res.reason }));
+  };
+
+  const unban = async () => {
+    if (!(await confirm(i18n('Unban')))) return;
+    guard(() => api('unban', { uid }));
+  };
+
   return (
-    <div className="section" style={{ marginTop: '1rem' }}>
-      <div className="section__header">
-        <h1 className="section__title">{user.uname} (#{user._id})</h1>
-        <button className="button--flat button--current" onClick={onClose}>{i18n('Cancel')}</button>
-      </div>
-      <div className="section__body">
-        {user.banReason ? <p style={{ color: 'red' }}>{i18n('Banned')}: {user.banReason}</p> : null}
-        <div className="cols">
-          <div className="col" style={{ minWidth: '40%', paddingRight: '1rem' }}>
-            <p className="bg--tint-1 padding-4 rounded-4">
-              <b>{i18n('Edit User')}</b>
-            </p>
-            <form
-              onSubmit={(e) => {
-                e.preventDefault();
-                const f = e.currentTarget.elements as any;
-                guard(() => api('updateInfo', {
-                  uid, uname: f.uname.value, mail: f.mail.value, school: f.school.value, mphone: f.mphone.value, bio: f.bio.value,
-                }), i18n('Saved'));
-              }}
-            >
-              <label className="form__label">{i18n('Name')}<input className="rounded textbox" name="uname" defaultValue={user.uname} /></label>
-              <label className="form__label">{i18n('Email')}<input className="rounded textbox" name="mail" defaultValue={user.mail || ''} /></label>
-              <label className="form__label">{i18n('School')}<input className="rounded textbox" name="school" defaultValue={user.school || ''} /></label>
-              <label className="form__label">mPhone<input className="rounded textbox" name="mphone" defaultValue={user.mphone || ''} /></label>
-              <label className="form__label">{i18n('Bio')}<input className="rounded textbox" name="bio" defaultValue={user.bio || ''} /></label>
-              <button className="button primary" type="submit">{i18n('Save Info')}</button>
-            </form>
-            <p className="bg--tint-1 padding-4 rounded-4" style={{ marginTop: '1rem' }}>
-              <b>{i18n('Reset Password')}</b>
-            </p>
-            <form
-              onSubmit={(e) => {
-                e.preventDefault();
-                const f = e.currentTarget.elements as any;
-                guard(async () => {
-                  const res = await api('resetPassword', { uid, password: f.password.value || undefined });
-                  Notification.success(`${i18n('New password:')} ${res.password}`);
-                }, i18n('Saved'));
-              }}
-            >
-              <label className="form__label">
-                {i18n('Reset Password')}
-                <input className="rounded textbox" name="password" type="text" placeholder="(random)" />
-              </label>
-              <button className="button primary" type="submit">{i18n('Reset Password')}</button>
-            </form>
-            <p className="bg--tint-1 padding-4 rounded-4" style={{ marginTop: '1rem' }}>
-              <b>{i18n('Privileges')}</b>
-            </p>
-            <PrivilegeEditor flags={user.privFlags || []} onSave={(flags) => guard(() => api('setPriv', { uid, privFlags: flags }), i18n('Saved'))} />
-            <p style={{ marginTop: '1rem' }}>
-              <button
-                className="button warn"
-                onClick={() => guard(() => api('ban', { uid, reason: window.prompt(i18n('Ban reason')) || '' }), i18n('Saved'))}
-              >
-                {i18n('Ban')}
-              </button>
-              {' '}
-              <button
-                className="button"
-                onClick={() => guard(() => api('unban', { uid }), i18n('Saved'))}
-              >
-                {i18n('Unban')}
-              </button>
-            </p>
+    <>
+      <div className="section">
+        <div className="section__header">
+          <h1 className="section__title">{user.uname} (#{user._id})</h1>
+          <div className="section__tools">
+            <button type="button" className="rounded button" onClick={onBack}>{i18n('Back')}</button>
           </div>
-          <div className="col" style={{ minWidth: '40%' }}>
-            <p className="bg--tint-1 padding-4 rounded-4">
-              <b>{i18n('Domain Roles')}</b>
-            </p>
-            <table className="table">
-              <thead>
-                <tr>
-                  <th>{i18n('Domain')}</th>
-                  <th>{i18n('Role')}</th>
-                  <th>Join</th>
-                </tr>
-              </thead>
-              <tbody>
-                {domains.map((d) => (
-                  <tr key={d.domainId}>
-                    <td>{d.name}</td>
-                    <td>
-                      <select
-                        defaultValue={d.role}
-                        onChange={(e) => guard(() => api('setDomainRole', { uid, domainId: d.domainId, role: e.target.value }), i18n('Saved'))}
-                      >
-                        {d.roles.map((r) => <option key={r} value={r}>{r}</option>)}
-                      </select>
-                    </td>
-                    <td>
-                      <input
-                        type="checkbox"
-                        checked={d.join}
-                        onChange={(e) => guard(() => api('setDomainJoin', { uid, domainId: d.domainId, join: e.target.checked }), i18n('Saved'))}
-                      />
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+        </div>
+        {user.banReason ? <div className="section__body"><p className="text-red">{i18n('Banned')}: {user.banReason}</p></div> : null}
+        <div className="section__body">
+          <div className="section__tools">
+            <button type="button" className="rounded button" onClick={editInfo}>{i18n('Edit User')}</button>
+            <button type="button" className="rounded button" onClick={resetPassword}>{i18n('Reset Password')}</button>
+            <button type="button" className="rounded button warn" onClick={ban}>{i18n('Ban')}</button>
+            <button type="button" className="rounded button" onClick={unban}>{i18n('Unban')}</button>
           </div>
         </div>
       </div>
-    </div>
-  );
-}
-
-function PrivilegeEditor({ flags, onSave }: { flags: string[], onSave: (flags: string[]) => void }) {
-  const [selected, setSelected] = useState<string[]>(flags);
-  useEffect(() => { setSelected(flags); }, [flags]);
-  return (
-    <div>
-      <div style={{ maxHeight: '16rem', overflowY: 'auto', border: '1px solid #eee', padding: '0.5rem' }}>
-        {PRIV_GROUPS.map(([key, label]) => (
-          <label key={key} style={{ display: 'block', fontSize: '0.85rem' }}>
-            <input
-              type="checkbox"
-              checked={selected.includes(key)}
-              onChange={(e) => {
-                setSelected((s) => (e.target.checked ? [...s, key] : s.filter((i) => i !== key)));
-              }}
-            />
-            {' '}{label}
-          </label>
-        ))}
+      <div className="section">
+        <div className="section__header">
+          <h1 className="section__title">{i18n('Privileges')}</h1>
+        </div>
+        <div className="section__body">
+          <div className="row">
+            {PRIV_FLAGS.map(([key, label]) => (
+              <div key={key} className="columns medium-6">
+                <label className="checkbox">
+                  <input
+                    type="checkbox"
+                    checked={(user.privFlags || []).includes(key)}
+                    onChange={(e) => {
+                      const flags = e.target.checked
+                        ? [...(user.privFlags || []), key]
+                        : (user.privFlags || []).filter((f: string) => f !== key);
+                      guard(() => api('setPriv', { uid, privFlags: flags }));
+                    }}
+                  />
+                  {label}
+                </label>
+              </div>
+            ))}
+          </div>
+        </div>
       </div>
-      <button className="button primary" style={{ marginTop: '0.5rem' }} onClick={() => onSave(selected)}>
-        {i18n('Save Privileges')}
-      </button>
-    </div>
+      <div className="section">
+        <div className="section__header">
+          <h1 className="section__title">{i18n('Domain Roles')}</h1>
+        </div>
+        <div className="section__body no-padding">
+          <table className="data-table">
+            <thead>
+              <tr>
+                <th>{i18n('Domain')}</th>
+                <th>{i18n('Role')}</th>
+                <th>Join</th>
+              </tr>
+            </thead>
+            <tbody>
+              {domains.map((d) => (
+                <tr key={d.domainId}>
+                  <td>{d.name}</td>
+                  <td>
+                    <select
+                      className="inline compact select"
+                      defaultValue={d.role}
+                      onChange={(e) => guard(() => api('setDomainRole', { uid, domainId: d.domainId, role: e.target.value }))}
+                    >
+                      {d.roles.map((r) => <option key={r} value={r}>{r}</option>)}
+                    </select>
+                  </td>
+                  <td>
+                    <label className="checkbox">
+                      <input
+                        type="checkbox"
+                        checked={d.join}
+                        onChange={(e) => guard(() => api('setDomainJoin', { uid, domainId: d.domainId, join: e.target.checked }))}
+                      />
+                    </label>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </>
   );
 }
 
@@ -235,72 +225,81 @@ function UserListPanel() {
 
   useEffect(() => { load('', 1); }, []);
 
+  if (selected !== null) {
+    return <UserDetail uid={selected} onBack={() => { setSelected(null); load(q, page); }} />;
+  }
+
   const totalPages = Math.max(1, Math.ceil(count / 20));
+
   return (
     <>
-      <form
-        onSubmit={(e) => {
-          e.preventDefault();
-          setPage(1);
-          load(q, 1);
-        }}
-      >
-        <div className="input group attached">
-          <input
-            type="text"
-            className="rounded textbox medium flexible"
-            placeholder={i18n('Search users by uid, username or email')}
-            value={q}
-            onChange={(e) => setQ(e.target.value)}
-          />
-          <button className="button primary" type="submit">{i18n('Search')}</button>
+      <div className="section">
+        <div className="section__header">
+          <h1 className="section__title">{i18n('User List')}</h1>
         </div>
-      </form>
-      <table className="table" style={{ marginTop: '1rem' }}>
-        <thead>
-          <tr>
-            <th>UID</th>
-            <th>{i18n('Name')}</th>
-            <th>{i18n('Email')}</th>
-            <th>{i18n('Privileges')}</th>
-            <th>{i18n('Actions')}</th>
-          </tr>
-        </thead>
-        <tbody>
-          {users.map((u) => (
-            <tr key={u._id}>
-              <td>{u._id}</td>
-              <td>
-                {u.uname}
-                {u.banReason ? <span className="logout-sinkin__text" style={{ color: 'red', marginLeft: '0.5rem' }}>({i18n('Banned')})</span> : null}
-              </td>
-              <td>{u.mail}</td>
-              <td style={{ fontSize: '0.75rem', maxWidth: '18rem' }}>{(u.privFlags || []).join(', ')}</td>
-              <td>
-                <button className="button--flat button--current" onClick={() => setSelected(u._id)}>{i18n('Edit User')}</button>
-              </td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-      {totalPages > 1 && (
-        <div style={{ marginTop: '1rem' }}>
-          <button className="button--flat" disabled={page <= 1} onClick={() => { setPage((p) => p - 1); load(q, page - 1); }}>‹</button>
-          <span> {page} / {totalPages} </span>
-          <button className="button--flat" disabled={page >= totalPages} onClick={() => { setPage((p) => p + 1); load(q, page + 1); }}>›</button>
+        <div className="section__body">
+          <form onSubmit={(e) => { e.preventDefault(); setPage(1); load(q, 1); }} name="filter-form">
+            <div className="inline compact textbox-container">
+              <input type="text" className="inline compact textbox" value={q} placeholder={i18n('Search users by uid, username or email')} onChange={(e) => setQ(e.target.value)} />
+            </div>
+            <button type="submit" className="primary rounded button">{i18n('Search')}</button>
+          </form>
         </div>
-      )}
-      {selected !== null && (
-        <UserDetail uid={selected} onClose={() => setSelected(null)} onChanged={() => load(q, page)} />
-      )}
+        <div className="section__body no-padding">
+          <table className="data-table">
+            <thead>
+              <tr>
+                <th>UID</th>
+                <th>{i18n('Name')}</th>
+                <th>{i18n('Email')}</th>
+                <th>{i18n('Privileges')}</th>
+                <th>{i18n('Actions')}</th>
+              </tr>
+            </thead>
+            <tbody>
+              {users.map((u) => (
+                <tr key={u._id}>
+                  <td>{u._id}</td>
+                  <td>
+                    <a href={`/user/${u._id}`} className="typo-a">{u.uname}</a>
+                    {u.banReason ? <span className="text-red"> ({i18n('Banned')})</span> : null}
+                  </td>
+                  <td>{u.mail}</td>
+                  <td>{(u.privFlags || []).join(', ')}</td>
+                  <td>
+                    <button type="button" className="rounded button" onClick={() => setSelected(u._id)}>{i18n('Edit User')}</button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+        {totalPages > 1 && (
+          <div className="section__body">
+            <ul className="pager">
+              {page > 1 && (
+                <li className="pager__item">
+                  <a className="link" onClick={() => { setPage(page - 1); load(q, page - 1); }}>{i18n('pager_previous')}</a>
+                </li>
+              )}
+              <li className="pager__item">{page} / {totalPages}</li>
+              {page < totalPages && (
+                <li className="pager__item">
+                  <a className="link" onClick={() => { setPage(page + 1); load(q, page + 1); }}>{i18n('pager_next')}</a>
+                </li>
+              )}
+            </ul>
+          </div>
+        )}
+      </div>
     </>
   );
 }
 
-const page = new NamedPage('user_list', () => {
+const pageObj = new NamedPage('user_list', () => {
   const container = document.getElementById('user-list-root');
   if (!container) return;
   ReactDOM.createRoot(container).render(<UserListPanel />);
 });
 
-export default page;
+export default pageObj;

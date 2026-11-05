@@ -10,7 +10,7 @@
         </div>
         <div class="section__body">
           <p>{{ _('Two layouts are supported: 1) <uname>/<Label>.<ext> folders for per-player submission; 2) flat Label.ext files assigned to the user below (or you).') }}</p>
-          <table class="table" style="margin-bottom: 1rem">
+          <table class="data-table">
             <thead>
               <tr>
                 <th>{{ _('Label') }}</th>
@@ -26,25 +26,28 @@
               {% endfor %}
             </tbody>
           </table>
-          <form id="bulk-submit-form" enctype="multipart/form-data">
-            <div class="form__item">
-              <label class="form__label">{{ _('Select Zip') }}
+        </div>
+        <div class="section__body">
+          <form id="bulk-submit-form">
+            <div class="row">
+              <div class="columns medium-6 form__item">
+                <label>{{ _('Select Zip') }}</label>
                 <input type="file" name="file" accept=".zip" required />
-              </label>
+              </div>
             </div>
-            <div class="form__item">
-              <label class="form__label">{{ _('Default assign to (optional)') }}
-                <input type="text" name="defaultUser" class="rounded textbox" placeholder="{{ UserContext.uname }}" />
-              </label>
+            <div class="row">
+              <div class="columns medium-6 form__item">
+                <label>{{ _('Default assign to (optional)') }}</label>
+                <input type="text" name="defaultUser" class="textbox" placeholder="{{ UserContext.uname }}" />
+              </div>
             </div>
-            <div class="form__item">
-              <label class="form__label">
-                <input type="checkbox" name="dryrun" value="true" /> {{ _('Dry Run') }}
-              </label>
-            </div>
-            <button type="submit" class="button primary">{{ _('Submit') }}</button>
+            <label class="checkbox">
+              <input type="checkbox" name="dryrun" value="true" />
+              {{ _('Dry Run') }}
+            </label>
+            <button type="submit" class="primary rounded button">{{ _('Submit') }}</button>
           </form>
-          <div id="bulk-submit-result" style="margin-top: 1rem"></div>
+          <div id="bulk-submit-result"></div>
         </div>
       </div>
     </div>

@@ -1,5 +1,4 @@
-import { i18n } from '@hydrooj/ui-default';
-import { NamedPage } from 'vj/misc/Page';
+import { i18n, NamedPage } from '@hydrooj/ui-default';
 
 function exportUrl() {
   const dm = location.pathname.match(/^\/d\/([^/]+)/);
@@ -17,20 +16,21 @@ const page = new NamedPage('contest_manage', () => {
   if (menu) {
     const li = document.createElement('li');
     li.className = 'menu__item';
-    li.innerHTML = `<a class="menu__link" href="${url}" target="_blank" rel="noopener"><i class="icon print"></i> ${label}</a>`;
+    li.innerHTML = `<a class="menu__link" href="${url}" target="_blank" rel="noopener">${label}</a>`;
     menu.appendChild(li);
     return;
   }
-  const btn = document.createElement('a');
-  btn.href = url;
-  btn.target = '_blank';
-  btn.rel = 'noopener';
-  btn.className = 'button primary float--right';
-  btn.style.position = 'fixed';
-  btn.style.bottom = '1rem';
-  btn.style.right = '1rem';
-  btn.textContent = label;
-  document.body.appendChild(btn);
+  // Fallback: insert into the section header tools
+  const tools = document.querySelector('.section__tools');
+  if (tools) {
+    const a = document.createElement('a');
+    a.className = 'primary rounded button';
+    a.href = url;
+    a.target = '_blank';
+    a.rel = 'noopener';
+    a.textContent = label;
+    tools.appendChild(a);
+  }
 });
 
 export default page;

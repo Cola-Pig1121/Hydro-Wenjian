@@ -1492,3 +1492,4 @@ ai_helper_kb_test_placeholder: "输入学生视角的问题，测试将注入的
 ai_helper_kb_run: "测试"
 ai_helper_kb_confirm_delete: "确定删除该条目？"
 ai_helper_kb_error_load: "知识库配置加载失败: "
+ai_helper_kb_tags: "标签"
