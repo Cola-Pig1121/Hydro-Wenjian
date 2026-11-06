@@ -189,7 +189,7 @@ export function KnowledgePanel() {
   return (
     <div>
       {config && (
-        <div className="section">
+        <div className="section visible">
           <div className="section__header">
             <h1 className="section__title">{i18n('ai_helper_kb_config')}</h1>
             <div className="section__tools">
@@ -247,7 +247,7 @@ export function KnowledgePanel() {
         </div>
       )}
 
-      <div className="section">
+      <div className="section visible">
         <div className="section__header">
           <h1 className="section__title">{i18n('ai_helper_kb_entries')} ({total})</h1>
           <div className="section__tools">
@@ -302,7 +302,7 @@ export function KnowledgePanel() {
         </div>
       </div>
 
-      <div className="section">
+      <div className="section visible">
         <div className="section__header">
           <h1 className="section__title">{i18n('ai_helper_kb_test')}</h1>
           <div className="section__tools">

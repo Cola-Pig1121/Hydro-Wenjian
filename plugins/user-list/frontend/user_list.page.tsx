@@ -118,7 +118,7 @@ function UserDetail({ uid, onBack }: { uid: number, onBack: () => void }) {
 
   return (
     <>
-      <div className="section">
+      <div className="section visible">
         <div className="section__header">
           <h1 className="section__title">{user.uname} (#{user._id})</h1>
           <div className="section__tools">
@@ -135,7 +135,7 @@ function UserDetail({ uid, onBack }: { uid: number, onBack: () => void }) {
           </div>
         </div>
       </div>
-      <div className="section">
+      <div className="section visible">
         <div className="section__header">
           <h1 className="section__title">{i18n('Privileges')}</h1>
         </div>
@@ -161,7 +161,7 @@ function UserDetail({ uid, onBack }: { uid: number, onBack: () => void }) {
           </div>
         </div>
       </div>
-      <div className="section">
+      <div className="section visible">
         <div className="section__header">
           <h1 className="section__title">{i18n('Domain Roles')}</h1>
         </div>
@@ -233,7 +233,7 @@ function UserListPanel() {
 
   return (
     <>
-      <div className="section">
+      <div className="section visible">
         <div className="section__header">
           <h1 className="section__title">{i18n('User List')}</h1>
         </div>
