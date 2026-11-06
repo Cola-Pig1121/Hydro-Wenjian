@@ -81,7 +81,8 @@ export default async function (env: { watch?: boolean, production?: boolean, mea
       loader: 'stylus-loader',
       options: {
         stylusOptions: {
-          preferPathResolver: 'webpack',
+          preferPathResolver: 'filesystem',
+          paths: [join(root(), '..', '..', 'node_modules'), root()],
           use: [require('rupture')()],
           import: ['~vj/common/common.inc.styl'],
         },
@@ -135,7 +136,7 @@ export default async function (env: { watch?: boolean, production?: boolean, mea
       chunkFilename: '[name].[chunkhash:6].chunk.js',
     },
     resolve: {
-      extensions: ['.js', '.jsx', '.ts', '.tsx', '.cjs'],
+      extensions: ['.js', '.jsx', '.ts', '.tsx', '.cjs', '.styl', '.d.ts'],
       alias: {
         vj: root(),
         'monaco-editor/esm/vs/editor/browser/editorExtensions': join(monacoPath, 'esm/vs/editor/browser/editorExtensions.js'),

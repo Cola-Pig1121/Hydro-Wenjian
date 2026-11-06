@@ -1,0 +1,14 @@
+{
+  "schemaVersion": "mimosa-hook-status/v1",
+  "recordedAt": "2026-11-05T03:57:29.931Z",
+  "sessionId": "sess_38a75db2-2dd4-4cc4-9efc-a3d7474e2518",
+  "event": "PostToolUse",
+  "toolName": "Write",
+  "file": "D:\\Code\\wenjian\\plugins\\contest-bulk-submit\\frontend\\bulk_submit.page.tsx",
+  "outcome": "inconclusive",
+  "coverage": "partial",
+  "findingCount": 0,
+  "durationMs": 15,
+  "hostState": "hook_complete",
+  "reportHint": ".mimosa/reports/"
+}
