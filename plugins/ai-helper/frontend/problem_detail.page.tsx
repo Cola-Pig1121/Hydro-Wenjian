@@ -181,8 +181,8 @@ const AIAssistantTrigger: React.FC<{ problemId: string }> = ({ problemId }) => {
             width: isHovered ? '44px' : '32px',
             height: '100px',
             background: isHovered
-              ? 'linear-gradient(135deg, #2563eb 0%, #3b82f6 100%)'
-              : 'linear-gradient(135deg, #3b82f6 0%, #60a5fa 100%)',
+              ? 'linear-gradient(135deg, #5f9fd6 0%, #7fb4e0 100%)'
+              : 'linear-gradient(135deg, #7fb4e0 0%, #a3ccec 100%)',
             borderRadius: '10px 0 0 10px',
             display: 'flex',
             flexDirection: 'column',
@@ -278,13 +278,13 @@ const AIAssistantTrigger: React.FC<{ problemId: string }> = ({ problemId }) => {
               alignItems: 'center',
               justifyContent: 'space-between',
               padding: '12px 16px',
-              background: '#f8fafc',
+              background: '#edf0f2',
               borderBottom: '1px solid #e5e7eb',
               flexShrink: 0
             }}
           >
             <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-              <Icon name="message" size={18} style={{ color: '#2563eb' }} />
+              <Icon name="message" size={18} style={{ color: '#5f9fd6' }} />
               <span style={{ fontWeight: 600, fontSize: '14px', color: '#1f2937' }}>{i18n('ai_helper_student_panel_title')}</span>
             </div>
             <button

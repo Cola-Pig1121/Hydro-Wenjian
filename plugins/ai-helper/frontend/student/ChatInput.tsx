@@ -7,15 +7,15 @@ import { TypeIcon, SendIcon, AttachIcon, RefreshIcon, RemoveIcon } from './icons
 const A = {
   border: '#eef1f5',
   cardBorder: '#e3e8ef',
-  inputBg: '#f8fafc',
-  primary: '#2563eb',
-  gradient: 'linear-gradient(135deg, #2563eb, #5b8def)',
+  inputBg: '#edf0f2',
+  primary: '#5f9fd6',
+  gradient: 'linear-gradient(135deg, #5f9fd6, #7fb4e0)',
   textPrimary: '#1e2536',
-  textSecondary: '#475569',
-  textMuted: '#64748b',
+  textSecondary: '#555555',
+  textMuted: '#999999',
   textFaint: '#94a3b8',
   placeholder: '#aab4c2',
-  selBorder: '#2563eb',
+  selBorder: '#5f9fd6',
   selBg: '#f3f7ff',
   idleBorder: '#eef1f5',
   idleBg: '#fafbfd',
@@ -158,7 +158,7 @@ export const ChatInput: React.FC<ChatInputProps> = ({
 
   return (
     <div style={{ background: '#fff', flexShrink: 0 }}>
-      <style>{`.ai-type-card:hover{border-color:#c5d4f5 !important}.ai-input-card:focus-within{border-color:#2563eb !important;box-shadow:0 0 0 3px rgba(37,99,235,.18)}`}</style>
+      <style>{`.ai-type-card:hover{border-color:#bcd7f0 !important}.ai-input-card:focus-within{border-color:#5f9fd6 !important;box-shadow:0 0 0 3px rgba(37,99,235,.18)}`}</style>
       {errorBanner}
 
       {/* 问题类型卡片 — 首次对话 */}

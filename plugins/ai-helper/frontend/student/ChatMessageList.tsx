@@ -12,14 +12,14 @@ const A = {
   border: '#eef1f5',
   problemBg: '#f7f9fc',
   pillBg: '#e7eeff',
-  pillText: '#2563eb',
+  pillText: '#5f9fd6',
   textPrimary: '#1e2536',
-  textSecondary: '#64748b',
+  textSecondary: '#999999',
   textMuted: '#94a3b8',
   textFaint: '#aab4c2',
   aiBubbleBg: '#f4f8ff',
   aiBubbleBorder: '#e2ecfb',
-  userBubbleBg: '#2563eb',
+  userBubbleBg: '#5f9fd6',
   mono: "'JetBrains Mono', ui-monospace, 'SFMono-Regular', monospace",
 };
 
@@ -110,7 +110,7 @@ export const ChatMessageList: React.FC<ChatMessageListProps> = ({
     <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', flex: 1, padding: '40px 24px', textAlign: 'center' }}>
       <div style={{
         width: '64px', height: '64px', borderRadius: '18px',
-        background: 'linear-gradient(135deg, #2563eb, #5b8def)',
+        background: 'linear-gradient(135deg, #5f9fd6, #7fb4e0)',
         display: 'flex', alignItems: 'center', justifyContent: 'center',
         fontFamily: A.mono, fontSize: '24px', fontWeight: 700, color: '#fff',
         letterSpacing: '-1px', marginBottom: '18px',
@@ -162,7 +162,7 @@ export const ChatMessageList: React.FC<ChatMessageListProps> = ({
           </div>
           {/* Attached code (student) */}
           {isStudent && msg.code && (
-            <div style={{ background: '#f8fafc', border: `1px solid ${A.border}`, borderRadius: '10px', padding: '8px', fontSize: '12px', maxWidth: '100%', overflow: 'hidden' }}>
+            <div style={{ background: '#edf0f2', border: `1px solid ${A.border}`, borderRadius: '10px', padding: '8px', fontSize: '12px', maxWidth: '100%', overflow: 'hidden' }}>
               <div style={{ fontSize: '11px', color: A.textMuted, marginBottom: '4px' }}><Icon name="code" size={14} /> {i18n('ai_helper_student_attached_code')}</div>
               <div className="markdown-body" dangerouslySetInnerHTML={{
                 __html: renderMarkdownSafe(`\`\`\`\n${msg.code.length > 500 ? msg.code.substring(0, 500) + `\n// ... ${i18n('ai_helper_student_code_truncated')}` : msg.code}\n\`\`\``),

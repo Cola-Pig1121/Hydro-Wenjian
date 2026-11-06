@@ -58,7 +58,7 @@ interface ConversationDetailResponse {
 }
 
 const questionTypeBadgeMap: Record<string, { bg: string; color: string; labelKey: string }> = {
-  understand: { bg: '#dbeafe', color: '#1e40af', labelKey: 'ai_helper_teacher_qtype_understand' },
+  understand: { bg: '#e8f1fa', color: '#1e40af', labelKey: 'ai_helper_teacher_qtype_understand' },
   think: { bg: '#f3e8ff', color: '#6b21a8', labelKey: 'ai_helper_teacher_qtype_think' },
   debug: { bg: '#fee2e2', color: '#991b1b', labelKey: 'ai_helper_teacher_qtype_debug' },
 };
@@ -208,7 +208,7 @@ export const ConversationDetailModal: React.FC<ConversationDetailModalProps> = (
         {/* Header */}
         <div style={{
           padding: '16px 24px',
-          borderBottom: '1px solid #e2e8f0',
+          borderBottom: '1px solid #dddddd',
           display: 'flex',
           justifyContent: 'space-between',
           alignItems: 'center',
@@ -266,13 +266,13 @@ export const ConversationDetailModal: React.FC<ConversationDetailModalProps> = (
         {conversation && (
           <div style={{
             padding: '12px 24px',
-            backgroundColor: '#f8fafc',
+            backgroundColor: '#edf0f2',
             display: 'flex',
             flexWrap: 'wrap',
             gap: '20px',
             fontSize: '13px',
-            color: '#64748b',
-            borderBottom: '1px solid #e2e8f0',
+            color: '#999999',
+            borderBottom: '1px solid #dddddd',
           }}>
             <div><span style={{ color: COLORS.textMuted }}>{i18n('ai_helper_teacher_conv_col_class')} </span><span style={{ color: COLORS.textPrimary, fontWeight: 500 }}>{conversation.classId || '-'}</span></div>
             <div><span style={{ color: COLORS.textMuted }}>{i18n('ai_helper_teacher_conv_col_messages')} </span><span style={{ color: COLORS.textPrimary, fontWeight: 500 }}>{conversation.messageCount}</span></div>
@@ -328,8 +328,8 @@ export const ConversationDetailModal: React.FC<ConversationDetailModalProps> = (
                 {(!isStudent || !hasCode || msg.content.trim()) && (
                   <div style={{
                     backgroundColor: isStudent ? '#f1f5f9' : '#eff6ff',
-                    border: isStudent ? 'none' : '1px solid #dbeafe',
-                    color: '#1e293b',
+                    border: isStudent ? 'none' : '1px solid #e8f1fa',
+                    color: '#3d3d3d',
                     borderRadius: '12px',
                     borderTopLeftRadius: isStudent ? '12px' : '2px',
                     borderTopRightRadius: isStudent ? '2px' : '12px',

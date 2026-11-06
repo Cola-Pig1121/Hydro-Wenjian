@@ -9,13 +9,14 @@ import { i18n } from '../utils/i18n';
 import { AnalyticsPage } from '../teacher/AnalyticsPage';
 import { ConversationList } from '../teacher/ConversationList';
 import { ConfigPanel } from '../admin/ConfigPanel';
+import { KnowledgePanel } from '../admin/KnowledgePanel';
 import { SafetyGovernancePanel } from '../admin/SafetyGovernancePanel';
 import { CostDashboard } from '../teacher/CostDashboard';
 import { TeachingReviewPanel } from '../teachingSummary/TeachingReviewPanel';
 import { COLORS, FONT_FAMILY, RADIUS, SPACING, getTabStyle } from '../utils/styles';
 import { getDomainFromUrl } from '../utils/domainUtils';
 
-type TabType = 'conversations' | 'analytics' | 'teaching_review' | 'cost' | 'safety' | 'config';
+type TabType = 'conversations' | 'analytics' | 'teaching_review' | 'cost' | 'safety' | 'knowledge' | 'config';
 
 const isTabType = (tab: string | null): tab is TabType => (
   tab === 'conversations'
@@ -23,6 +24,7 @@ const isTabType = (tab: string | null): tab is TabType => (
   || tab === 'teaching_review'
   || tab === 'cost'
   || tab === 'safety'
+  || tab === 'knowledge'
   || tab === 'config'
 );
 
@@ -65,6 +67,7 @@ export const AIHelperDashboard: React.FC = () => {
     { id: 'teaching_review', icon: 'document', label: i18n('ai_helper_dashboard_tab_teaching_review') || '教学总结回顾' },
     { id: 'cost', icon: 'wallet', label: i18n('ai_helper_dashboard_tab_cost') },
     { id: 'safety', icon: 'shield', label: i18n('ai_helper_dashboard_tab_safety') },
+    { id: 'knowledge', icon: 'lightbulb', label: i18n('ai_helper_dashboard_tab_knowledge') },
     { id: 'config', icon: 'settings', label: i18n('ai_helper_dashboard_tab_config') },
   ];
 
@@ -76,7 +79,7 @@ export const AIHelperDashboard: React.FC = () => {
       minHeight: '100vh',
     }}>
       <style>{`
-        .ai-helper-dashboard button:focus-visible { outline: 2px solid #2563eb !important; outline-offset: -3px; }
+        .ai-helper-dashboard button:focus-visible { outline: 2px solid #5f9fd6 !important; outline-offset: -3px; }
         .ai-helper-dashboard [role="tab"] { display: inline-flex; align-items: center; gap: 7px; }
         @media (max-width: 600px) { .ai-helper-dashboard [role="tab"] .ai-icon { display: none; } }
       `}</style>
@@ -143,6 +146,7 @@ export const AIHelperDashboard: React.FC = () => {
               <SafetyGovernancePanel embedded />
             </div>
           )}
+          {activeTab === 'knowledge' && <KnowledgePanel />}
           {activeTab === 'config' && <ConfigPanel embedded />}
         </div>
       </div>

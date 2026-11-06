@@ -160,7 +160,7 @@ interface ConversationListProps {
  * ConversationList 组件
  */
 const questionTypeBadgeMap: Record<string, { bg: string; color: string; labelKey: string }> = {
-  understand: { bg: '#dbeafe', color: '#1e40af', labelKey: 'ai_helper_teacher_qtype_understand' },
+  understand: { bg: '#e8f1fa', color: '#1e40af', labelKey: 'ai_helper_teacher_qtype_understand' },
   think: { bg: '#f3e8ff', color: '#6b21a8', labelKey: 'ai_helper_teacher_qtype_think' },
   debug: { bg: '#fee2e2', color: '#991b1b', labelKey: 'ai_helper_teacher_qtype_debug' },
 };
