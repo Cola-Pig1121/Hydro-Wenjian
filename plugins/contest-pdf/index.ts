@@ -1,7 +1,7 @@
 import os from 'os';
 import path from 'path';
 import { execFile } from 'child_process';
-import fs from 'fs-extra';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import {
     _, Context, ContestModel, ForbiddenError, Handler, param, parseStatements, PERM,
     ProblemModel, Schema, Types,
@@ -178,11 +178,11 @@ ${sections.join('\n')}
         return;
       }
 
-      const tmp = await fs.mkdtemp(path.resolve(os.tmpdir(), 'hydro-contest-pdf-'));
+      const tmp = await mkdtemp(path.resolve(os.tmpdir(), 'hydro-contest-pdf-'), {});
       const htmlPath = path.resolve(tmp, 'input.html');
       const pdfPath = path.resolve(tmp, 'output.pdf');
       try {
-        await fs.writeFile(htmlPath, doc);
+        await writeFile(htmlPath, doc);
         const cmd = config.customCommand || cachedEngine;
         if (cachedEngine === 'custom') {
           const [bin, ...rest] = cmd.split(/\s+/);
@@ -190,14 +190,14 @@ ${sections.join('\n')}
         } else {
           await execFileAsync(cachedEngine, [htmlPath, pdfPath]);
         }
-        const pdf = await fs.readFile(pdfPath);
+        const pdf = await readFile(pdfPath);
         this.binary(pdf, `${baseName}.pdf`);
       } catch (err: any) {
         ctx.logger.warn('contest-pdf export failed: %O', err);
         // 转换失败同样回退 HTML
         this.binary(doc, `${baseName}.html`);
       } finally {
-        await fs.remove(tmp).catch(() => undefined);
+        await rm(tmp, { recursive: true, force: true }).catch(() => undefined);
       }
     }
   }

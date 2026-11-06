@@ -1,7 +1,8 @@
 import os from 'os';
 import path from 'path';
 import { Readable } from 'stream';
-import fs from 'fs-extra';
+import { createReadStream } from 'node:fs';
+import { copyFile, mkdtemp, rm } from 'node:fs/promises';
 import {
     _, ContestModel, Context, DomainModel, ForbiddenError, Handler, ObjectId, param,
     PERM, PRIV, ProblemModel, RecordModel, Schema, SettingModel, SystemModel, Types, UserModel, Zip,
@@ -78,13 +79,13 @@ export async function apply(ctx: Context, config: ResolvedConfig) {
       const file = this.request.files?.file;
       if (!file) throw new ForbiddenError(this.translate('No file uploaded'));
       await this.limitRate('bulk_submit', 60, 10);
-      const tmpdir = await fs.mkdtemp(path.resolve(os.tmpdir(), 'hydro-bulk-'));
+      const tmpdir = await mkdtemp(path.resolve(os.tmpdir(), 'hydro-bulk-'), {});
       const results: Array<Record<string, any>> = [];
       let zipHandle: any;
       try {
         const zipPath = path.resolve(tmpdir, 'upload.zip');
-        await fs.copyFile(file.filepath, zipPath);
-        zipHandle = new Zip.ZipReader(Readable.toWeb(fs.createReadStream(zipPath)) as any);
+        await copyFile(file.filepath, zipPath);
+        zipHandle = new Zip.ZipReader(Readable.toWeb(createReadStream(zipPath)) as any);
         const entries: Zip.Entry[] = await zipHandle.getEntries();
 
         const files: ParsedFile[] = [];
@@ -174,7 +175,7 @@ export async function apply(ctx: Context, config: ResolvedConfig) {
         }
       } finally {
         await Promise.all([
-          fs.remove(tmpdir).catch(() => undefined),
+          rm(tmpdir, { recursive: true, force: true }).catch(() => undefined),
           zipHandle?.close?.().catch?.(() => undefined),
         ]);
       }
