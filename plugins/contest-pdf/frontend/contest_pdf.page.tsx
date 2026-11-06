@@ -1,4 +1,4 @@
-import { i18n, NamedPage } from '@hydrooj/ui-default';
+import { addPage, i18n, NamedPage } from '@hydrooj/ui-default';
 
 function exportUrl() {
   const dm = location.pathname.match(/^\/d\/([^/]+)/);
@@ -8,7 +8,7 @@ function exportUrl() {
   return `${domainPrefix}/contest/${m[1]}/exportpdf?format=pdf`;
 }
 
-const page = new NamedPage('contest_manage', () => {
+addPage(new NamedPage('contest_manage', () => {
   const url = exportUrl();
   if (!url) return;
   const label = i18n('Export Problemset PDF');
@@ -31,6 +31,5 @@ const page = new NamedPage('contest_manage', () => {
     a.textContent = label;
     tools.appendChild(a);
   }
-});
+}));
 
-export default page;

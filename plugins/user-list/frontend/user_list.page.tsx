@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import {
-    confirm, i18n, NamedPage, Notification, prompt, ReactDOM, request,
+    addPage, confirm, i18n, NamedPage, Notification, prompt, ReactDOM, request,
 } from '@hydrooj/ui-default';
 
 interface ListUser {
@@ -296,10 +296,10 @@ function UserListPanel() {
   );
 }
 
-const pageObj = new NamedPage('user_list', () => {
+addPage(new NamedPage('user_list', () => {
   const container = document.getElementById('user-list-root');
   if (!container) return;
   ReactDOM.createRoot(container).render(<UserListPanel />);
-});
+}));
 
-export default pageObj;
+

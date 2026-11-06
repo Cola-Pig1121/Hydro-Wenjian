@@ -1,10 +1,10 @@
-import { i18n, NamedPage, Notification, request } from '@hydrooj/ui-default';
+import { addPage, i18n, NamedPage, Notification, request } from '@hydrooj/ui-default';
 
 function esc(s: any): string {
   return String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 
-const page = new NamedPage('bulk_submit', () => {
+addPage(new NamedPage('bulk_submit', () => {
   const form = document.getElementById('bulk-submit-form') as HTMLFormElement | null;
   const resultEl = document.getElementById('bulk-submit-result');
   if (!form || !resultEl) return;
@@ -58,6 +58,5 @@ const page = new NamedPage('bulk_submit', () => {
       btn.disabled = false;
     }
   });
-});
+}));
 
-export default page;
