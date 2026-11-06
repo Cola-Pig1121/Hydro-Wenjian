@@ -181,5 +181,6 @@ class UserListHandler extends Handler {
 }
 
 export async function apply(ctx: Context) {
-    ctx.Route('user_list', '/user-list', UserListHandler, PRIV.PRIV_EDIT_SYSTEM);
+    ctx.Route('user_list', '/manage/userlist', UserListHandler, PRIV.PRIV_EDIT_SYSTEM);
+    ctx.injectUI('ControlPanel', 'user_list');
 }

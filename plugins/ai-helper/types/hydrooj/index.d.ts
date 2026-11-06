@@ -23,6 +23,14 @@ declare module 'hydrooj' {
   // 域权限位（BigInt），如 PERM_EDIT_PROBLEM / PERM_EDIT_PROBLEM_SELF
   export const PERM: Record<string, any>;
 
+  export class ForbiddenError extends Error {
+    constructor(message?: any, ...args: any[]);
+  }
+
+  export class NotFoundError extends Error {
+    constructor(message?: any, ...args: any[]);
+  }
+
   export function definePlugin<TConfig = any>(options: {
     name?: string;
     using?: (keyof Context)[];

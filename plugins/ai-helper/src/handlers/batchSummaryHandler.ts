@@ -4,7 +4,7 @@
  * 提供竞赛批量摘要的生成、查看、重试、发布、导出、编辑、停止和继续功能
  */
 
-import { Handler, PRIV, db } from 'hydrooj';
+import { ContestModel, ForbiddenError, Handler, PERM, PRIV, db } from 'hydrooj';
 import type { ServerResponse } from 'http';
 import { ObjectId } from '../utils/mongo';
 import { getDomainId } from '../utils/domainHelper';
@@ -22,6 +22,26 @@ function escapeCsv(value: string): string {
 }
 
 // ─── Handlers ─────────────────────────────────────────────────────────────────
+
+// ─── Access control ──────────────────────────────────────────────────────────
+
+/**
+ * 批量摘要的所有任务级操作都必须校验当前用户是对应比赛的编辑者
+ * (组织者或拥有 PERM_EDIT_CONTEST),否则任何登录用户都能通过 jobId
+ * 越权读取/修改/导出他人比赛的摘要 (IDOR)。
+ */
+async function assertContestEditor(h: Handler, domainId: string, contestId: unknown): Promise<void> {
+  let tdoc = null;
+  try {
+    tdoc = await ContestModel.get(domainId, contestId as any);
+  } catch {
+    tdoc = null;
+  }
+  if (!tdoc) throw new ForbiddenError('contest not found');
+  if (!h.user.own(tdoc) && !h.user.hasPerm(PERM.PERM_EDIT_CONTEST)) {
+    throw new ForbiddenError('not contest editor');
+  }
+}
 
 /**
  * BatchSummaryGenerateHandler - 触发批量生成任务
@@ -66,6 +86,7 @@ export class BatchSummaryGenerateHandler extends Handler {
         this.response.type = 'application/json';
         return;
       }
+      await assertContestEditor(this, domainId, contestObjId);
 
       // Get all current attendees
       const statusColl = db.collection('document.status');
@@ -146,6 +167,9 @@ export class BatchSummaryGenerateHandler extends Handler {
           this.response.type = 'application/json';
           return;
         }
+
+        // 复用既有任务时同样校验归属（job 属于本比赛）
+        await assertContestEditor(this, job.domainId, job.contestId);
       }
 
       // Fetch user names (only for students being processed in this run)
@@ -275,6 +299,7 @@ export class BatchSummaryResultHandler extends Handler {
         this.response.type = 'application/json';
         return;
       }
+      await assertContestEditor(this, job.domainId, job.contestId);
 
       const isTeacher = this.user.hasPriv(PRIV.PRIV_EDIT_SYSTEM);
 
@@ -319,6 +344,7 @@ export class BatchSummaryRetryHandler extends Handler {
         this.response.type = 'application/json';
         return;
       }
+      await assertContestEditor(this, job.domainId, job.contestId);
 
       const summary = await summaryModel.findByJobAndUser(job._id, parseInt(userId, 10));
       if (!summary) {
@@ -359,6 +385,7 @@ export class BatchSummaryRetryFailedHandler extends Handler {
         this.response.type = 'application/json';
         return;
       }
+      await assertContestEditor(this, job.domainId, job.contestId);
 
       const count = await summaryModel.resetFailedToPending(job._id);
 
@@ -393,6 +420,7 @@ export class BatchSummaryPublishHandler extends Handler {
         this.response.type = 'application/json';
         return;
       }
+      await assertContestEditor(this, job.domainId, job.contestId);
 
       if (userId) {
         const summary = await summaryModel.findByJobAndUser(job._id, parseInt(userId, 10));
@@ -445,6 +473,7 @@ export class BatchSummaryExportHandler extends Handler {
         this.response.type = 'application/json';
         return;
       }
+      await assertContestEditor(this, job.domainId, job.contestId);
 
       const summaries = await summaryModel.findAllByJob(job._id);
 
@@ -505,6 +534,7 @@ export class BatchSummaryEditHandler extends Handler {
         this.response.type = 'application/json';
         return;
       }
+      await assertContestEditor(this, job.domainId, job.contestId);
 
       const summaryDoc = await summaryModel.findByJobAndUser(job._id, parseInt(userId, 10));
       if (!summaryDoc) {
@@ -631,6 +661,7 @@ export class BatchSummaryStopHandler extends Handler {
         this.response.type = 'application/json';
         return;
       }
+      await assertContestEditor(this, job.domainId, job.contestId);
 
       // Mark job as stopped — the service loop checks this between batches
       await jobModel.updateStatus(job._id, 'stopped');
@@ -667,6 +698,7 @@ export class BatchSummaryContinueHandler extends Handler {
         this.response.type = 'application/json';
         return;
       }
+      await assertContestEditor(this, job.domainId, job.contestId);
 
       // Fetch problem info (same as generate handler)
       const documentColl = db.collection('document');
