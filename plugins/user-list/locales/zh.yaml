@@ -1,0 +1,28 @@
+__id: zh
+__langname: 简体中文
+__interface: yes
+Actions: 操作
+Back: 返回
+Banned: 已封禁
+Bio: 简介
+Ban: 封禁
+Ban reason: 封禁原因
+Cancel: 取消
+Domain: 域
+Domain Roles: 域与角色
+Edit User: 编辑用户
+Email: 邮箱
+'JavaScript is required to use this page.': 此页面需要启用 JavaScript。
+Loading...: 加载中…
+Name: 用户名
+'New password': 新密码
+'New password:': '新密码：'
+Privileges: 全局权限
+Reset Password: 重置密码
+Saved: 已保存
+School: 学校
+Search: 搜索
+'Search users by uid, username or email': 按 UID / 用户名 / 邮箱搜索用户
+'User List': 用户管理
+leave blank for random: 留空则随机生成
+user_list: 用户管理

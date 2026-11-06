@@ -203,16 +203,4 @@ ${sections.join('\n')}
   }
 
   ctx.Route('contest_exportpdf', '/contest/:tid/exportpdf', ContestExportPdfHandler);
-  ctx.i18n.load('zh', {
-    'Only contest owners or editors can export contest PDF': '仅比赛组织者或编辑可导出题面 PDF',
-    'Export Problemset PDF': '导出题面 PDF',
-    'Exporting a PDF of all problems in this contest as a single file.': '将本场比赛全部题面导出为单个文件',
-    'Browser will ask where to save. If the PDF engine is not installed on the server, an HTML file will be returned instead - use Ctrl+P to print as PDF.':
-      '浏览器将提示保存位置。若服务器未安装 PDF 引擎, 将返回 HTML 文件, 可用 Ctrl+P 打印为 PDF。',
-    Samples: '样例',
-    Sample: '样例',
-    Explanation: '解释',
-    Attachment: '附件',
-    contest_exportpdf: '导出题面',
-  });
 }

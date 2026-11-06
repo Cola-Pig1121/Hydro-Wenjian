@@ -182,32 +182,4 @@ class UserListHandler extends Handler {
 
 export async function apply(ctx: Context) {
     ctx.Route('user_list', '/user-list', UserListHandler, PRIV.PRIV_EDIT_SYSTEM);
-    ctx.i18n.load('zh', {
-        'User List': '用户管理',
-        'user_list': '用户管理',
-        'Search users by uid, username or email': '按 UID / 用户名 / 邮箱搜索用户',
-        Search: '搜索',
-        Name: '用户名',
-        Email: '邮箱',
-        Privileges: '全局权限',
-        Actions: '操作',
-        'Reset Password': '重置密码',
-        'New password': '新密码',
-        'New password:': '新密码：',
-        'leave blank for random': '留空则随机生成',
-        Saved: '已保存',
-        Back: '返回',
-        'Loading...': '加载中…',
-        Ban: '封禁',
-        Unban: '解封',
-        'Ban reason': '封禁原因',
-        'Domain Roles': '域与角色',
-        Domain: '域',
-        Role: '角色',
-        'Edit User': '编辑用户',
-        School: '学校',
-        Bio: '简介',
-        Banned: '已封禁',
-        'JavaScript is required to use this page.': '此页面需要启用 JavaScript。',
-    });
 }

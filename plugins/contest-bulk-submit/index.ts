@@ -184,34 +184,4 @@ export async function apply(ctx: Context, config: ResolvedConfig) {
   }
 
   ctx.Route('contest_bulk_submit', '/contest/:tid/bulksubmit', BulkSubmitHandler, PRIV.PRIV_USER_PROFILE);
-
-  ctx.i18n.load('zh', {
-    'Bulk Submit': '批量提交',
-    'Only contest owners or editors can bulk submit': '仅比赛组织者或编辑可批量提交',
-    'No file uploaded': '未收到上传文件',
-    'No valid file found': '压缩包中没有可识别的代码文件',
-    'Too many files': '文件数超出上限',
-    'Contest is not running': '比赛未在进行中，且未允许赛后批量提交',
-    'User not found': '找不到用户',
-    'Unknown problem label': '未知的题目标号',
-    'File not found in archive': '压缩包中未找到该文件',
-    'Code too long': '代码超长',
-    'Unsupported language': '不支持的语言',
-    'Select Zip': '选择压缩包',
-    'Dry Run': '仅预检不提交',
-    Submit: '提交',
-    'Result': '结果',
-    Label: '标号',
-    Problem: '题目',
-    File: '文件',
-    User: '用户',
-    Status: '状态',
-    Language: '语言',
-    'Submissions queued for judging': '提交已加入评测队列',
-    contest_bulk_submit: '批量提交',
-    'Zip layout': '压缩包结构说明',
-    'Two layouts are supported: 1) <uname>/<Label>.<ext> folders for per-player submission; 2) flat Label.ext files assigned to the user below (or you).':
-      '支持两种结构：1）按选手目录 `<用户名>/A.cpp` 逐人提交；2）平铺 `A.cpp`，全部提交给指定用户（默认当前用户）。',
-    'Default assign to (optional)': '平铺模式归属用户（可选）',
-  });
 }
