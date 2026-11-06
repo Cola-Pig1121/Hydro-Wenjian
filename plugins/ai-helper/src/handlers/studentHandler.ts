@@ -1590,8 +1590,15 @@ export class ProblemStatusHandler extends Handler {
     const acCode = acRecordDoc?.code;
     const acLang = acRecordDoc?.lang;
 
+    // 是否提交过该题(任意一次提交即可)：题目页 AI 面板把手的显示条件
+    const hasSubmitted = hasAccepted || !!(await db.collection('record').findOne(
+      { domainId, uid: userId, pid: pdoc.docId },
+      { projection: { _id: 1 } },
+    ));
+
     this.response.body = {
       hasAccepted,
+      hasSubmitted,
       acCode,    // 最近一次 AC 的代码
       acLang     // 代码语言
     };

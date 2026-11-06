@@ -22,9 +22,10 @@ import {
 
 interface UseChatSessionOptions {
   problemId: string;
+  initialCode?: string;
 }
 
-export function useChatSession({ problemId }: UseChatSessionOptions) {
+export function useChatSession({ problemId, initialCode }: UseChatSessionOptions) {
   const [state, dispatch] = useReducer(chatReducer, initialChatState);
   const {
     questionType,
@@ -440,6 +441,14 @@ export function useChatSession({ problemId }: UseChatSessionOptions) {
   useEffect(() => {
     fetchSubmissionStatus();
   }, [fetchSubmissionStatus]);
+
+  // 记录页场景：无草稿编辑器时，用传入的提交代码初始化
+  useEffect(() => {
+    if (initialCode && !readFromScratchpad()) {
+      dispatch({ type: 'SET_CODE', payload: initialCode });
+      dispatch({ type: 'SET_INCLUDE_CODE', payload: true });
+    }
+  }, [initialCode]);
 
   // Redux store subscribe: watch for AC status changes (STATUS_ACCEPTED=1)
   useEffect(() => {

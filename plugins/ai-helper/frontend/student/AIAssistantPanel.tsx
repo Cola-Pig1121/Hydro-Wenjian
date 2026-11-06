@@ -13,12 +13,13 @@ import {
 
 interface AIAssistantPanelProps {
   problemId: string;
+  initialCode?: string;
 }
 
 const RETRYABLE_CATEGORIES = new Set(['rate_limit', 'timeout', 'network']);
 
-export const AIAssistantPanel: React.FC<AIAssistantPanelProps> = ({ problemId }) => {
-  const chat = useChatSession({ problemId });
+export const AIAssistantPanel: React.FC<AIAssistantPanelProps> = ({ problemId, initialCode }) => {
+  const chat = useChatSession({ problemId, initialCode });
   const { state, dispatch } = chat;
 
   const textSelection = useTextSelection({
