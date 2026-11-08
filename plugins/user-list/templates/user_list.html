@@ -1,18 +1,7 @@
-{% extends "layout/basic.html" %}
+{% extends "manage_base.html" %}
 
-{% block content %}
-<div class="row">
-  <div class="columns">
-    <div class="column medium-10">
-      <div class="section">
-        <div class="section__header">
-          <h1 class="section__title">{{ _('User List') }}</h1>
-        </div>
-        <div class="section__body" id="user-list-root">
-          <noscript>{{ _('JavaScript is required to use this page.') }}</noscript>
-        </div>
-      </div>
-    </div>
-  </div>
+{% block manage_content %}
+<div id="user-list-root">
+  <noscript>{{ _('JavaScript is required to use this page.') }}</noscript>
 </div>
 {% endblock %}
