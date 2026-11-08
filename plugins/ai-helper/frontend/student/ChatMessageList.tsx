@@ -230,8 +230,8 @@ export const ChatMessageList: React.FC<ChatMessageListProps> = ({
         );
       })()}
 
-      {/* Loading (pre-stream) */}
-      {isLoading && !isStreaming && (
+      {/* Loading / pre-first-token thinking (covers the gap after SSE opens but before content arrives) */}
+      {(isLoading || (isStreaming && !streamingContent)) && (
         <div style={{ display: 'flex', gap: '8px', alignItems: 'flex-start' }}>
           <AIMark size={28} radius={8} fontSize={10} />
           <div style={{ padding: '12px 14px', borderRadius: '14px 14px 14px 4px', background: A.aiBubbleBg, border: `1px solid ${A.aiBubbleBorder}`, color: A.textSecondary, fontSize: '13px', display: 'flex', alignItems: 'center', gap: '8px' }}>
