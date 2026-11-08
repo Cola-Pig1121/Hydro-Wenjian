@@ -32,3 +32,5 @@ Password: 密码
 'User created': 用户已创建
 'system account cannot be modified': 系统保留账号不可修改
 'username or email already exists': 用户名或邮箱已存在
+Change Password: 修改密码
+'New password (leave blank for random)': 新密码(留空则随机生成)

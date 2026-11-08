@@ -55,6 +55,7 @@ function UserDetail({ uid, onBack }: { uid: number, onBack: () => void }) {
   const [user, setUser] = useState<any>(null);
   const [domains, setDomains] = useState<DomainInfo[]>([]);
   const [error, setError] = useState('');
+  const [newpw, setNewpw] = useState('');
 
   const reload = async () => {
     try {
@@ -105,6 +106,20 @@ function UserDetail({ uid, onBack }: { uid: number, onBack: () => void }) {
     }
   };
 
+  const changePassword = async () => {
+    try {
+      const out = await api('resetPassword', { uid, password: newpw || undefined });
+      setNewpw('');
+      if (newpw) {
+        Notification.success(i18n('Saved'));
+      } else {
+        await prompt(i18n('New password'), { password: { type: 'text', default: out.password, label: i18n('New password:') } });
+      }
+    } catch (e: any) {
+      Notification.error(e.message);
+    }
+  };
+
   const ban = async () => {
     const res = await prompt(i18n('Ban'), { reason: { type: 'text', label: i18n('Ban reason'), default: '' } });
     if (!res) return;
@@ -133,6 +148,23 @@ function UserDetail({ uid, onBack }: { uid: number, onBack: () => void }) {
             <button type="button" className="rounded button warn" onClick={ban}>{i18n('Ban')}</button>
             <button type="button" className="rounded button" onClick={unban}>{i18n('Unban')}</button>
           </div>
+        </div>
+      </div>
+      <div className="section visible">
+        <div className="section__header">
+          <h1 className="section__title">{i18n('Change Password')}</h1>
+        </div>
+        <div className="section__body">
+          <div className="inline compact textbox-container">
+            <input
+              type="password"
+              className="inline compact textbox"
+              value={newpw}
+              onChange={(e) => setNewpw(e.target.value)}
+              placeholder={i18n('New password (leave blank for random)')}
+            />
+          </div>
+          <button type="button" className="primary rounded button" onClick={changePassword}>{i18n('Change Password')}</button>
         </div>
       </div>
       <div className="section visible">
