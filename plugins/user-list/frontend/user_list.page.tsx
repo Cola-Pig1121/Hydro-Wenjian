@@ -206,12 +206,56 @@ function UserDetail({ uid, onBack }: { uid: number, onBack: () => void }) {
   );
 }
 
+function CreateUserForm({ onBack, onCreated }: { onBack: () => void, onCreated: () => void }) {
+  const submit = async (e: React.FormEvent<HTMLFormElement>) => {
+    e.preventDefault();
+    const f = (e.currentTarget as any).elements;
+    try {
+      const res = await api('createUser', { mail: f.mail.value, uname: f.uname.value, password: f.password.value });
+      Notification.success(`${i18n('User created')}: UID ${res.uid}`);
+      onCreated();
+    } catch (err: any) {
+      Notification.error(err.message);
+    }
+  };
+  return (
+    <div className="section visible">
+      <div className="section__header">
+        <h1 className="section__title">{i18n('Create User')}</h1>
+        <div className="section__tools">
+          <button type="button" className="rounded button" onClick={onBack}>{i18n('Back')}</button>
+        </div>
+      </div>
+      <div className="section__body">
+        <form onSubmit={submit}>
+          <div className="row">
+            <div className="columns medium-6 form__item">
+              <label>{i18n('Name')}</label>
+              <input name="uname" className="textbox" required autoComplete="off" />
+            </div>
+            <div className="columns medium-6 form__item">
+              <label>{i18n('Email')}</label>
+              <input name="mail" type="email" className="textbox" required autoComplete="off" />
+            </div>
+            <div className="columns medium-6 form__item">
+              <label>{i18n('Password')}</label>
+              <input name="password" type="text" className="textbox" required minLength={6} autoComplete="new-password" />
+            </div>
+          </div>
+          <button type="submit" className="primary rounded button">{i18n('Create User')}</button>
+        </form>
+      </div>
+    </div>
+  );
+}
+
 function UserListPanel() {
   const [q, setQ] = useState('');
   const [users, setUsers] = useState<ListUser[]>([]);
   const [count, setCount] = useState(0);
   const [page, setPage] = useState(1);
   const [selected, setSelected] = useState<number | null>(null);
+  const [creating, setCreating] = useState(false);
 
   const load = async (query = q, pg = page) => {
     try {
@@ -229,20 +273,22 @@ function UserListPanel() {
     return <UserDetail uid={selected} onBack={() => { setSelected(null); load(q, page); }} />;
   }
 
+  if (creating) {
+    return <CreateUserForm onBack={() => setCreating(false)} onCreated={() => { setCreating(false); load('', 1); }} />;
+  }
+
   const totalPages = Math.max(1, Math.ceil(count / 20));
 
   return (
     <>
       <div className="section visible">
-        <div className="section__header">
-          <h1 className="section__title">{i18n('User List')}</h1>
-        </div>
         <div className="section__body">
-          <form onSubmit={(e) => { e.preventDefault(); setPage(1); load(q, 1); }} name="filter-form">
+          <form onSubmit={(e) => { e.preventDefault(); setPage(1); load(q, 1); }} name="filter-form" style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
             <div className="inline compact textbox-container">
               <input type="text" className="inline compact textbox" value={q} placeholder={i18n('Search users by uid, username or email')} onChange={(e) => setQ(e.target.value)} />
             </div>
             <button type="submit" className="primary rounded button">{i18n('Search')}</button>
+            <button type="button" className="rounded button float-right" onClick={() => setCreating(true)}>+ {i18n('Create User')}</button>
           </form>
         </div>
         <div className="section__body no-padding">

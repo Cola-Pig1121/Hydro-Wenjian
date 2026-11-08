@@ -44,6 +44,11 @@ class UserListHandler extends Handler {
         this.checkPriv(PRIV.PRIV_EDIT_SYSTEM);
     }
 
+    // 系统保留账号（Guest=0 / Hydro=1）不可执行任何变更操作
+    private guardSystem(uid: number) {
+        if (uid <= 1) throw new ForbiddenError(this.translate('system account cannot be modified'));
+    }
+
     async get() {
         this.response.template = 'user_list.html';
         this.response.body = { privFlags: Object.keys(PRIV_FLAGS) };
@@ -61,6 +66,9 @@ class UserListHandler extends Handler {
             ];
             if (/^\d+$/.test(q)) or.push({ _id: +q });
             query.$or = or;
+        } else {
+            // 默认列表隐藏系统保留账号（Guest=0 / Hydro=1）
+            query._id = { $gt: 1 };
         }
         const [udocs, count] = await this.ctx.db.paginate(
             UserModel.getMulti(query, ['_id', 'uname', 'mail', 'priv', 'nSubmit', 'nAccept', 'regAt', 'banReason', 'school', 'mphone']),
@@ -119,14 +127,27 @@ class UserListHandler extends Handler {
         if (bio !== undefined) $set.bio = bio;
         if (Object.keys($set).length) ops.push(UserModel.setById(uid, $set));
         if (!ops.length) throw new ForbiddenError('nothing to update');
+        this.guardSystem(uid);
         await Promise.all(ops);
         await OplogModel.log(this, 'userlist.update_info', { uid, uname, mail, school, mphone });
         this.response.body = { ok: true };
     }
 
+    @param('mail', Types.Email)
+    @param('uname', Types.Username)
+    @param('password', Types.Password)
+    async postCreateUser(domainId: string, mail: string, uname: string, password: string) {
+        const existing = await UserModel.getByEmail(domainId, mail) || await UserModel.getByUname(domainId, uname);
+        if (existing) throw new ForbiddenError(this.translate('username or email already exists'));
+        const uid = await UserModel.create(mail, uname, password);
+        await OplogModel.log(this, 'userlist.create_user', { uid, mail, uname });
+        this.response.body = { ok: true, uid };
+    }
+
     @param('uid', Types.Int)
     @param('password', Types.String, true)
     async postResetPassword(domainId: string, uid: number, password = '') {
+        this.guardSystem(uid);
         const newPassword = password || randomstring(12);
         await UserModel.setPassword(uid, newPassword);
         await OplogModel.log(this, 'userlist.reset_password', { uid });
@@ -137,6 +158,7 @@ class UserListHandler extends Handler {
     @param('privFlags', Types.ArrayOf(Types.String, true), true)
     async postSetPriv(domainId: string, uid: number, privFlags?: string[]) {
         if (!privFlags) throw new ForbiddenError('privFlags required');
+        this.guardSystem(uid);
         const priv = privArrayToBits(privFlags);
         await UserModel.setPriv(uid, priv);
         await OplogModel.log(this, 'userlist.set_priv', { uid, priv });
@@ -146,6 +168,7 @@ class UserListHandler extends Handler {
     @param('uid', Types.Int)
     @param('reason', Types.String, true)
     async postBan(domainId: string, uid: number, reason = '') {
+        this.guardSystem(uid);
         await UserModel.ban(uid, reason);
         await OplogModel.log(this, 'userlist.ban', { uid, reason });
         this.response.body = { ok: true };
