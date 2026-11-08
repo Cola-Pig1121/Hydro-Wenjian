@@ -1607,3 +1607,58 @@ export class ProblemStatusHandler extends Handler {
 }
 
 export const ProblemStatusHandlerPriv = PRIV.PRIV_USER_PROFILE;
+
+/**
+ * GET /ai-helper/problem-info/:problemId
+ * 按题目 ID 自动获取题目标题与题面内容（供前端面板展示题目上下文）
+ */
+export class ProblemInfoHandler extends Handler {
+  async get({ problemId }: { problemId: string }) {
+    if (await applyRateLimit(this, {
+      op: 'ai_problem_info', periodSecs: 60, maxOps: 30,
+      failOpen: true,
+      errorMessage: 'ai_helper_err_rate_limited',
+    })) return;
+
+    if (!problemId || typeof problemId !== 'string' || problemId.length > 50) {
+      this.response.status = 400;
+      this.response.body = { error: this.translate('ai_helper_err_invalid_problem_id') };
+      this.response.type = 'application/json';
+      return;
+    }
+
+    const domainId = getDomainId(this);
+    const pdoc = await ProblemModel.get(domainId, problemId, ['docId', 'domainId', 'title', 'content', 'reference']);
+    if (!pdoc) {
+      this.response.status = 404;
+      this.response.body = { error: this.translate('ai_helper_err_invalid_problem_id') };
+      this.response.type = 'application/json';
+      return;
+    }
+
+    let content = '';
+    try {
+      const statements = await ProblemModel.getStatements(pdoc);
+      content = statements.map((s) => String(s.content || '')).join('\n');
+    } catch {
+      content = String(pdoc.content || '');
+    }
+    if (!content && pdoc.reference) {
+      const source = await ProblemModel.get(pdoc.reference.domainId, pdoc.reference.pid, ['docId', 'domainId', 'title', 'content']);
+      if (source) {
+        try {
+          const statements = await ProblemModel.getStatements(source);
+          content = statements.map((s) => String(s.content || '')).join('\n');
+        } catch { /* keep empty */ }
+      }
+    }
+
+    this.response.body = {
+      title: pdoc.title,
+      content: content.substring(0, 3000),
+    };
+    this.response.type = 'application/json';
+  }
+}
+
+export const ProblemInfoHandlerPriv = PRIV.PRIV_USER_PROFILE;

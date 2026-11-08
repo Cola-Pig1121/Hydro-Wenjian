@@ -494,31 +494,62 @@ export function useChatSession({ problemId, initialCode }: UseChatSessionOptions
     }
   }, [includeCode]);
 
-  // Read problem info from DOM
+  // Read problem info: prefer backend API by problem id, fall back to DOM
   useEffect(() => {
-    try {
-      const titleElement = document.querySelector('.section__title');
-      const title = titleElement?.textContent?.trim() || '';
+    const fromDom = () => {
+      try {
+        const titleElement = document.querySelector('.section__title');
+        const title = titleElement?.textContent?.trim() || '';
 
-      const match = window.location.pathname.match(/\/p\/([A-Z0-9]+)/i);
-      const problemIdFromUrl = match ? match[1] : problemId;
+        const match = window.location.pathname.match(/\/p\/([A-Z0-9]+)/i);
+        const problemIdFromUrl = match ? match[1] : problemId;
 
-      const descElement = document.querySelector('.section__body.typo[data-fragment-id="problem-description"]');
-      const fullText = descElement?.textContent?.trim() || '';
-      const content = fullText.substring(0, 500) + (fullText.length > 500 ? '...' : '');
+        const descElement = document.querySelector('.section__body.typo[data-fragment-id="problem-description"]');
+        const fullText = descElement?.textContent?.trim() || '';
+        const content = fullText.substring(0, 500) + (fullText.length > 500 ? '...' : '');
 
-      if (title && content) {
-        dispatch({
-          type: 'SET_PROBLEM_INFO',
-          payload: { title, problemId: problemIdFromUrl, content },
-        });
-      } else {
-        dispatch({ type: 'SET_PROBLEM_INFO_ERROR', payload: i18n('ai_helper_student_err_read_problem') });
+        if (title && content) {
+          dispatch({
+            type: 'SET_PROBLEM_INFO',
+            payload: { title, problemId: problemIdFromUrl, content },
+          });
+        } else {
+          dispatch({ type: 'SET_PROBLEM_INFO_ERROR', payload: i18n('ai_helper_student_err_read_problem') });
+        }
+      } catch (err) {
+        console.error('[AI Helper] Failed to read problem info:', err);
+        dispatch({ type: 'SET_PROBLEM_INFO_ERROR', payload: i18n('ai_helper_student_err_read_problem_failed') });
       }
-    } catch (err) {
-      console.error('[AI Helper] Failed to read problem info:', err);
-      dispatch({ type: 'SET_PROBLEM_INFO_ERROR', payload: i18n('ai_helper_student_err_read_problem_failed') });
-    }
+    };
+
+    const load = async () => {
+      try {
+        const match = window.location.pathname.match(/^(?:\/d\/([^/]+))?\/p\/([A-Za-z0-9-]+)/i);
+        const pid = (match ? match[2] : problemId) || '';
+        if (!pid) { fromDom(); return; }
+        const domainPrefix = match?.[1] ? `/d/${encodeURIComponent(match[1])}` : '';
+        const res = await fetch(`${domainPrefix}/ai-helper/problem-info/${encodeURIComponent(pid)}`, {
+          headers: { Accept: 'application/json' },
+          credentials: 'same-origin',
+        });
+        if (!res.ok) { fromDom(); return; }
+        const data = await res.json();
+        if (data && data.title) {
+          const content = String(data.content || '').substring(0, 500);
+          dispatch({
+            type: 'SET_PROBLEM_INFO',
+            payload: { title: data.title, problemId: pid, content },
+          });
+        } else {
+          fromDom();
+        }
+      } catch (err) {
+        console.error('[AI Helper] problem-info API failed, fallback to DOM:', err);
+        fromDom();
+      }
+    };
+
+    load();
   }, [problemId]);
 
   // Cleanup abort controller on unmount

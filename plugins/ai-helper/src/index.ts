@@ -23,6 +23,8 @@ import {
   ChatHandlerPriv,
   ProblemStatusHandler,
   ProblemStatusHandlerPriv,
+  ProblemInfoHandler,
+  ProblemInfoHandlerPriv,
   SafetyAppealHandler,
   SafetyAppealHandlerPriv,
 } from './handlers/studentHandler';
@@ -363,6 +365,10 @@ const aiHelperPlugin = definePlugin<AIHelperConfig>({
     // GET /ai-helper/problem-status/:problemId - 查询用户在该题的提交状态（是否已 AC）
     ctx.Route('ai_helper_problem_status', '/ai-helper/problem-status/:problemId', ProblemStatusHandler, ProblemStatusHandlerPriv);
     ctx.Route('ai_helper_problem_status_domain', '/d/:domainId/ai-helper/problem-status/:problemId', ProblemStatusHandler, ProblemStatusHandlerPriv);
+
+    // GET /ai-helper/problem-info/:problemId - 按题目 ID 自动获取题目标题与题面
+    ctx.Route('ai_helper_problem_info', '/ai-helper/problem-info/:problemId', ProblemInfoHandler, ProblemInfoHandlerPriv);
+    ctx.Route('ai_helper_problem_info_domain', '/d/:domainId/ai-helper/problem-info/:problemId', ProblemInfoHandler, ProblemInfoHandlerPriv);
 
     // 注册教师端路由 (支持域前缀)
     // 当前设计：AI 学习助手对话统计非常敏感，仅允许 root 访问。
